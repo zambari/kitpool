@@ -59,7 +59,8 @@ impl Worker {
             }
             let mut names = format!("{} · {} banks · {} saved presets\n\n", model.name(), banks.len(), entries.len());
             for (bank, entry) in &entries {
-                let _ = writeln!(names, "{bank}:{:03}\t{:?}", entry.slot, entry.name);
+                let ops = entry.ops.map_or_else(|| "-".into(), |o| format!("ops={o:04x}"));
+                let _ = writeln!(names, "{bank}:{:03}\t{ops}\t{:?}", entry.slot, entry.name);
             }
             std::fs::write(dir.join("names.txt"), names).map_err(io_error)?;
             let mut strings_file = std::fs::File::create(dir.join("strings.tsv")).map_err(io_error)?;
@@ -104,7 +105,7 @@ impl Worker {
                  containers/  uncompressed Data API containers as received; these are not project SysEx dumps\n\
                  decoded/     supported sound structures extracted from containers\n\
                  banks.txt    all banks, including empty ones\n\
-                 names.txt    saved slot locations and listing names\n\
+                 names.txt    saved slot locations, listing operation bits (locked presets lack some) and names\n\
                  presets.tsv  container sizes, sound offsets, versions, names or decode errors\n\
                  strings.tsv  printable runs of 3+ characters with file-relative byte offsets\n\n\
                  presets.json importable backup for Presets > Load presets (supported container layouts only)\n\n\

@@ -1122,7 +1122,7 @@ pub enum ElekEv {
     PresetBanks(Result<Vec<String>, String>),
     Presets { bank: String, result: Result<Vec<presets::PresetEntry>, String> },
     Preset { bank: String, slot: u32, result: Result<presets::Preset, String> },
-    PresetTags { bank: String, slot: u32, result: Result<u32, String> },
+    PresetTags { bank: String, slot: u32, result: Result<presets::Preset, String> },
     PresetReadProgress(f32),
     PresetDumpProgress { label: String, done: usize, total: usize },
     PresetsDumped(Result<PathBuf, String>),

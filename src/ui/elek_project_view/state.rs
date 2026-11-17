@@ -20,7 +20,7 @@ pub struct ProjEd {
     /// events alone drops the copied sounds.
     pub(super) tclip_ev: Option<TrackClip>,
     pub(super) tclip_snd: Option<TrackClip>,
-    /// One sound shared by Sounds, Presets and Patterns. Copying it drops the copied
+    /// One sound shared by Pool, Presets and Patterns. Copying it drops the copied
     /// tracks and patterns, and copying those drops it.
     pub pool_clip: Option<PoolClip>,
     /// A selected SOUNDS row uses sound-only keyboard copy/paste.

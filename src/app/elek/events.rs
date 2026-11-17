@@ -34,14 +34,11 @@ impl App {
                         st.names.insert(*key, path.clone());
                     }
                 }
-                st.presets.sounds.insert((bank, slot), Some(result));
+                st.presets.sound_read(bank, slot, result);
             }
             ElekEv::PresetReadProgress(p) => st.presets.read_progress = p,
             ElekEv::PresetTags { bank, slot, result } => {
-                // A reload can discard a background read while it is in flight.
-                if let Some(tags) = st.presets.tag_masks.get_mut(&(bank, slot)) {
-                    *tags = Some(result);
-                }
+                st.presets.tags_read(bank, slot, result);
             }
             ElekEv::PresetDumpProgress { label, done, total } => {
                 st.presets.dumping = Some((label, done, total));
@@ -88,17 +85,7 @@ impl App {
                 st.presets.pushing = Some((label, done, total));
             }
             ElekEv::PresetsPushed(result) => {
-                st.presets.pushing = None;
-                match result {
-                    Ok(()) => {
-                        st.presets.reload();
-                        st.presets.status = "Presets pushed to +Drive and verified.".into();
-                    }
-                    Err(e) => {
-                        st.presets.push_failed = true;
-                        st.presets.status = format!("Preset push failed: {e} Some edits may already be on the device. Reload presets before trying again.");
-                    }
-                }
+                st.presets.pushed(result);
             }
             ElekEv::Projects(r) => st.projects = Some(r),
             ElekEv::SoundProgress { done, total } => st.lib.sound_progress = Some((done, total)),

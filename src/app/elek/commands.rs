@@ -3,7 +3,7 @@
 use super::*;
 
 impl App {
-    pub(super) fn elek_intents(&mut self, intents: Vec<ElekIntent>) {
+    pub(in crate::app) fn elek_intents(&mut self, intents: Vec<ElekIntent>) {
         self.sync_pool_fetch();
         for i in intents {
             match i {

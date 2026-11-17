@@ -277,7 +277,7 @@ pub struct Cell {
     /// Track sounds (kit sound, MIDI-track bit) taken from another pattern,
     /// the same way.
     pub sounds: BTreeMap<u8, Option<u8>>,
-    /// Track sounds taken from the sound pool (pasted from the Sounds page):
+    /// Track sounds taken from the sound pool (pasted from the Pool page):
     /// track → the pool sound as it was when copied (where it was read from
     /// and its name). Never on a track that is also in `sounds`.
     pub pool: BTreeMap<u8, super::library::SoundCell>,
@@ -329,7 +329,7 @@ impl Cell {
         }
     }
 
-    /// Give track `t` pool sound `c` (as copied on the Sounds page).
+    /// Give track `t` pool sound `c` (as copied on the Pool page).
     pub fn set_pool_sound(&mut self, t: usize, c: super::library::SoundCell) {
         self.tags.remove(&(t as u8));
         self.sounds.remove(&(t as u8));

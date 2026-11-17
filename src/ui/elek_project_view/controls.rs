@@ -140,7 +140,7 @@ fn keys(ctx: &egui::Context, st: &mut ElekState) {
                 None => "Select the track(s) to paste the copied sound onto (click a track name in a folded-out pattern), then ⌘V".into(),
             }
         } else if ed.sound_selected.is_some() {
-            "Copy a single sound on Sounds, Presets, or Patterns first".into()
+            "Copy a single sound on Pool, Presets, or Patterns first".into()
         } else if !ed.has_tclip() {
             paste(ed)
         } else {

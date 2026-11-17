@@ -1,4 +1,4 @@
-//! The Sounds page (sibling of Patterns): the project's 128 pool sounds,
+//! The Pool page (sibling of Patterns): the project's 128 pool sounds,
 //! read by itself the first time the page shows with a device plugged in,
 //! with the sample each plays, its machine and SRC page, and the kit tracks
 //! that carry the same sound (name and sample), i.e. where it was probably
@@ -694,7 +694,7 @@ fn sound_rows(ui: &mut egui::Ui, st: &mut ElekState, sounds: &[PoolSound], edita
                 let (text, tip) = match (ok, s.blank) {
                     (false, _) => (
                         "Paste track sound".to_owned(),
-                        "Nothing copied: right-click a sound on Sounds or Presets → Copy (⌘C), or copy a track sound on Patterns".to_owned(),
+                        "Nothing copied: right-click a sound on Pool or Presets → Copy (⌘C), or copy a track sound on Patterns".to_owned(),
                     ),
                     (true, true) => (
                         format!("Paste {paste_what}"),
@@ -808,7 +808,7 @@ fn copy_pool_sound(st: &mut ElekState, at: usize, sounds: &[PoolSound]) -> Strin
     let track_ok = p.pool_sound_for_track(&cell).map(|_| ());
     let clip = PoolClip { at, cell, name: s.name.clone(), track_ok };
     let msg = match &clip.track_ok {
-        Ok(()) => format!("Copied {}: ⌘V on Sounds, a slot on Presets, or selected tracks on Patterns", clip.desc()),
+        Ok(()) => format!("Copied {}: ⌘V on Pool, a slot on Presets, or selected tracks on Patterns", clip.desc()),
         Err(e) => format!("Copied {} (for the pool only; not onto tracks: {e})", clip.desc()),
     };
     st.proj.set_pool_clip(clip);
@@ -997,7 +997,7 @@ fn paste_pool_clip(st: &mut ElekState, mut c: PoolClip, at: usize, confirmed: bo
     st.lib.cells_mut()[at] = c.cell.clone();
     st.lib.selected = Some(at);
     let sample_note = if added_sample.is_some() { " Its source sample was added to the sample pool." } else { "" };
-    Ok(format!("{} pasted into pool sound {:03}.{sample_note} Push on Sounds to send it", c.desc(), at + 1))
+    Ok(format!("{} pasted into pool sound {:03}.{sample_note} Push on Pool to send it", c.desc(), at + 1))
 }
 
 /// Called with the other device dialogs, once per frame, on every device page.

@@ -254,10 +254,10 @@ matching sound version.
 Push on **Sounds** sends project sound and sample edits; Push on **Presets**
 saves to the selected +Drive preset slot. Saving a pool sound uses an existing
 saved preset of the same sound version as a container-format reference; if
-none exists, save one sound on the device first. Preset writes are read back
+none exists, save one sound on the device first. Manual preset pushes are read back
 and checked after saving.
 
-Edits show in amber and wait for **Push to device**; **Undo** and **Reset**
+With Live off, edits show in amber and wait for **Push to device**; **Undo** and **Reset**
 revert pending edits. **Reload presets** rereads saved changes from the device
 and asks before discarding pending edits. Progress bars show reads and pushes.
 Push checks the touched slots for changes made on the device, saves directly
@@ -265,6 +265,18 @@ to the preset banks on +Drive, then verifies the result. If a push fails,
 reload before trying again: some edits may already have landed. Presets work
 without loading a project. Preset decoding has been verified on Digitakt II;
 other supported sound versions use the existing sound decoder.
+
+Enable **⚡ Live** on Presets to save edits automatically after a 400 ms pause.
+Renames (row menu → **Rename…**), tags, moves, swaps, pastes and clears use
+this queue. You can keep editing while a save runs, including editing the
+same preset again. Live keeps the cached browser and selection, skips the
+before/after verification reads, and does not reload the project or preset
+banks after each save. A preset's full data is still fetched once when an
+edit needs it. Edits made directly on the device may be overwritten in Live.
+**Undo** / **Reset** affect only unsent edits. Turning Live off leaves those
+edits staged for manual Push. A write failure stops the queue and requires
+Reload; reconnect also turns Live off. Loading a backup turns Live off so
+you can review the restore before pushing it.
 
 The Presets **💾 Save** foldout offers **Save presets… (importable JSON)**
 and **Save preset debug dump**. The importable file preserves every saved

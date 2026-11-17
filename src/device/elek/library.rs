@@ -1,4 +1,4 @@
-//! The project's sound pool for the Sounds page (`ui::elek_library_view`):
+//! The project's sound pool for the Pool page (`ui::elek_library_view`):
 //! one `0x63` request per sound, falling back to the whole-project dump,
 //! which carries the non-empty ones.
 //!
@@ -13,7 +13,7 @@
 use super::*;
 use super::machines::{machine_id, machine_name, src_params, SrcParam};
 
-/// Where pool sound `i` comes from after the Sounds page's edits.
+/// Where pool sound `i` comes from after the Pool page's edits.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum SoundSrc {
     /// The pool sound read at this index.
@@ -89,7 +89,7 @@ fn sound_lock_at(m: Model, pv: u32) -> Option<usize> {
 const NO_LOCK: u8 = 0xFF;
 
 /// Write `name` (upper case, up to 15 chars, NUL padded) into a sound struct.
-fn set_sound_name(d: &mut [u8], name: &str) {
+pub(super) fn set_sound_name(d: &mut [u8], name: &str) {
     let name = patterns::clean_name(name);
     if let Some(field) = d.get_mut(12..28) {
         field.fill(0);

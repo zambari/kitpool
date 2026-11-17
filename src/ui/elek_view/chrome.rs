@@ -75,7 +75,7 @@ pub(crate) fn device_pages(ui: &mut egui::Ui, active: Option<ElekPage>, drive: b
             (DevicePick::Page(ElekPage::Order), "Samples", "The sample pool in two side-by-side panes"),
             (DevicePick::Page(ElekPage::Project), "Patterns", "Experimental: move, copy, clear and rename patterns (Digitakt II support is newer and less tested)"),
             (DevicePick::Page(ElekPage::Presets), "Presets", "Saved +Drive presets in two bank browsers"),
-            (DevicePick::Page(ElekPage::Library), "Sounds", "The project's 128 pool sounds: rearrange, rename or delete them"),
+            (DevicePick::Page(ElekPage::Library), "Pool", "The project's 128 pool sounds: rearrange, rename or delete them"),
             (DevicePick::Drive, "+Drive", "The device's file storage, in the right column"),
         ],
         |v| match v {

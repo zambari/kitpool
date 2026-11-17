@@ -458,6 +458,10 @@ impl eframe::App for App {
         crate::ui::elek_presets_view::finish_copy(&mut self.elek, ctx);
         self.prioritize_elek_read();
         self.live_push_tick(ctx);
+        let preset_intents = self.elek.presets.live_tick(ctx);
+        if !preset_intents.is_empty() {
+            self.elek_intents(preset_intents);
+        }
         self.check_changed(ctx);
         self.print_tick(ctx);
 

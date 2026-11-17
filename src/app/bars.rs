@@ -545,7 +545,7 @@ impl App {
             }
 
             // Device feedback uses the existing footer instead of adding rows
-            // above Patterns / Presets / Sounds after clipboard operations.
+            // above Patterns / Presets / Pool after clipboard operations.
             let device_status = if self.elek_mode && !self.pool_focused
                 && self.elek.page == crate::ui::elek_view::ElekPage::Presets
             {

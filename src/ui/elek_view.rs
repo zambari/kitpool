@@ -114,7 +114,7 @@ pub struct ElekState {
     pub hide_files: bool,
     /// The project editor's layout and selection.
     pub proj: crate::ui::elek_project_view::ProjEd,
-    /// The Sounds page: kits, samples, sound pool, +Drive data.
+    /// The Pool page: kits, samples, sound pool, +Drive data.
     pub lib: crate::ui::elek_library_view::LibraryView,
     /// Saved +Drive preset banks, independent of the loaded project.
     pub presets: crate::ui::elek_presets_view::PresetView,
@@ -168,7 +168,7 @@ pub enum ElekPage {
     Project,
     /// Saved +Drive preset banks.
     Presets,
-    /// Sounds: the project's sound pool.
+    /// Pool: the project's sound pool.
     Library,
 }
 
@@ -234,7 +234,7 @@ pub enum ElekIntent {
     /// `SaveProject`) / load one into it.
     SavePattern(usize, String, bool),
     LoadPattern(usize),
-    /// Read the project's sound pool (Sounds page).
+    /// Read the project's sound pool (Pool page).
     ReadSounds,
 }
 

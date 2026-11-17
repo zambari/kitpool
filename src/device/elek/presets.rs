@@ -11,6 +11,18 @@ pub struct PresetEntry {
     /// Device id, used verbatim in `/soundbanks/<bank>/<slot>` (one based).
     pub slot: u32,
     pub name: String,
+    /// Listing operations word (big-endian u16 after the size). Bit meanings
+    /// aren't documented; write-protected ("locked") presets lack some of the
+    /// bits unlocked ones carry, see `locked`. `None` when not read from a listing.
+    pub ops: Option<u16>,
+}
+
+impl PresetEntry {
+    /// Locked on the device: missing operation bits that other listed presets
+    /// have (`full` = union of every listed entry's word).
+    pub fn locked(&self, full: u16) -> bool {
+        self.ops.is_some_and(|ops| ops & full != full)
+    }
 }
 
 #[derive(Clone)]
@@ -34,6 +46,15 @@ impl Preset {
         self.data.get_mut(8..12).ok_or("Missing preset tags")?
             .copy_from_slice(&mask.to_be_bytes());
         self.sound.tags = mask;
+        Ok(())
+    }
+
+    pub fn set_name(&mut self, name: &str) -> Result<(), String> {
+        let name = patterns::clean_name(name);
+        if name.trim().is_empty() { return Err("Enter a preset name".into()); }
+        self.data.get(12..28).ok_or("Missing preset name")?;
+        library::set_sound_name(&mut self.data, &name);
+        self.sound.name = name;
         Ok(())
     }
 
@@ -105,6 +126,9 @@ impl PresetOp {
 
 /// Snapshots of every touched slot, plus the staged native operations.
 pub struct PresetPush {
+    /// Manual pushes check for device changes and read back every touched slot.
+    /// Live pushes trust the browser snapshot and the device's write replies.
+    pub verify: bool,
     pub ops: Vec<PresetOp>,
     pub before: Vec<(PresetSlot, Option<Vec<u8>>)>,
     pub after: Vec<(PresetSlot, Option<Vec<u8>>)>,
@@ -143,6 +167,7 @@ struct DataEntry {
     name: String,
     children: bool,
     slot: Option<u32>,
+    ops: Option<u16>,
     valid: bool,
 }
 
@@ -162,19 +187,19 @@ impl Conn {
             let name = rd.str().map_err(bad)?;
             let children = rd.bool().map_err(bad)?;
             let kind = rd.u8().map_err(bad)?;
-            let (slot, valid) = match kind {
+            let (slot, ops, valid) = match kind {
                 1 => {
                     rd.u32().map_err(bad)?;
-                    (None, true)
+                    (None, None, true)
                 }
                 2 => {
                     let id = rd.u32().map_err(bad)?;
                     rd.u32().map_err(bad)?; // size
-                    rd.u8().map_err(bad)?;
-                    rd.u8().map_err(bad)?; // allowed operations
+                    let hi = rd.u8().map_err(bad)?;
+                    let lo = rd.u8().map_err(bad)?; // allowed operations, u16 BE
                     let valid = rd.bool().map_err(bad)?;
                     rd.u8().map_err(bad)?; // metadata present
-                    (Some(id), valid)
+                    (Some(id), Some(u16::from_be_bytes([hi, lo])), valid)
                 }
                 _ => return refused(format!("Unknown preset entry type {kind}")),
             };
@@ -182,6 +207,7 @@ impl Conn {
                 name,
                 children: children || kind == 1,
                 slot,
+                ops,
                 valid,
             });
         }
@@ -212,6 +238,7 @@ impl Conn {
                 Some(PresetEntry {
                     slot: e.slot?,
                     name: e.name,
+                    ops: e.ops,
                 })
             })
             .collect();
@@ -278,15 +305,25 @@ impl Conn {
         Ok(data)
     }
 
-    /// Background row metadata needs no sample-path lookup or editable snapshot.
-    pub(super) fn preset_tags(&mut self, bank: &str, slot: u32) -> R<u32> {
+    /// Background row read: the whole preset, without the sample-path lookup
+    /// (`sample` path left `None`). The page keeps it so editing, renaming,
+    /// tagging and push checks need no second read; copying still asks for a
+    /// full `read_preset` so a paste can find its sample.
+    pub(super) fn preset_tags(&mut self, bank: &str, slot: u32) -> R<Preset> {
         if !valid_bank(bank) || !(1..=256).contains(&slot) {
             return refused("Invalid preset location");
         }
         let model = self.model()?;
         let container = self.preset_data(&PresetSlot::new(bank, slot).path(), &|_| {})?;
-        let data = decode_sound(model, &container).map_err(Fail::Refused)?;
-        be32(data, 8).ok_or_else(|| Fail::Refused("Missing preset tags".into()))
+        let data = decode_sound(model, &container).map_err(Fail::Refused)?.to_vec();
+        be32(&data, 8).ok_or_else(|| Fail::Refused("Missing preset tags".into()))?;
+        Ok(Preset {
+            model,
+            sound: library::parse_sound(model, slot as usize, &data),
+            sample: sample_key(model, &data).map(|key| (key, None)),
+            container,
+            data,
+        })
     }
 
     pub(super) fn read_preset(
@@ -355,7 +392,10 @@ impl Conn {
         let size = parts.0.len() + parts.1.len();
         let r = self.request(0x57, Args::default().u32(size as u32).str(&loc.path()))?;
         if r.first() != Some(&1) || r.len() < 5 {
-            return refused("The device refused to open the preset writer");
+            return refused(format!(
+                "The device refused to save {}:{:03} (a locked preset there can't be overwritten until it's unlocked on the device)",
+                loc.bank, loc.slot
+            ));
         }
         let job = be32(&r, 1).unwrap();
         self.preset_writer = Some(job);
@@ -394,10 +434,10 @@ impl Conn {
         progress: &impl Fn(&str, usize, usize),
     ) -> R<()> {
         let model = self.model()?;
-        let total = plan.before.len() + plan.ops.len() + plan.after.len();
+        let total = plan.ops.len() + if plan.verify { plan.before.len() + plan.after.len() } else { 0 };
         let mut done = 0;
         // Check every source AND destination before making any changes.
-        for (loc, expected) in &plan.before {
+        for (loc, expected) in plan.before.iter().filter(|_| plan.verify) {
             progress("Checking presets on device", done, total);
             let entries = self.preset_entries(&loc.bank)?;
             let exists = entries.iter().any(|e| e.slot == loc.slot);
@@ -452,12 +492,12 @@ impl Conn {
             let reply = self.request(cmd, args)?;
             if reply.first() != Some(&1) {
                 return refused(
-                    "The device refused a preset edit. Some edits may already have landed; reload presets before trying again.",
+                    "The device refused a preset edit (locked presets can't be moved, swapped, cleared or overwritten until they're unlocked on the device). Some edits may already have landed; reload presets before trying again.",
                 );
             }
             done += 1;
         }
-        for (loc, expected) in &plan.after {
+        for (loc, expected) in plan.after.iter().filter(|_| plan.verify) {
             progress("Verifying presets on device", done, total);
             let exists = self
                 .preset_entries(&loc.bank)?
@@ -478,7 +518,7 @@ impl Conn {
             }
             done += 1;
         }
-        progress("Presets pushed and verified", total, total);
+        progress(if plan.verify { "Presets pushed and verified" } else { "Live presets saved" }, total, total);
         Ok(())
     }
 }

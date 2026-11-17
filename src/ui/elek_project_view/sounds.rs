@@ -48,7 +48,7 @@ pub(super) struct SoundFold<'a, 'b> {
 }
 
 /// The SOUNDS line under a folded-out pattern's tracks and, when open, each
-/// kit track's sound decoded as on the Sounds page: name, the pool sound it
+/// kit track's sound decoded as on the Pool page: name, the pool sound it
 /// matches (same name and sample), machine and SRC page. Values that differ
 /// from that pool sound are amber. Returns the y below it.
 pub(super) fn sound_foldout(f: SoundFold) -> f32 {
@@ -58,7 +58,7 @@ pub(super) fn sound_foldout(f: SoundFold) -> f32 {
     let col = if r.hovered() || open { OLED } else { OLED_DIM };
     triangle(painter, egui::pos2(x0 + 30.0, head.center().y), open, col);
     painter.text(egui::pos2(x0 + SND_NAME_X, head.center().y), egui::Align2::LEFT_CENTER, "SOUNDS", oled_font(11.0), col);
-    if r.on_hover_text("Each kit track's sound: machine and SRC page, decoded like the Sounds page (some values may still read wrong). POOL: the pool sound with the same name and sample; amber values differ from it").clicked() {
+    if r.on_hover_text("Each kit track's sound: machine and SRC page, decoded like the Pool page (some values may still read wrong). POOL: the pool sound with the same name and sample; amber values differ from it").clicked() {
         toggle.push(i);
     }
     if open {
@@ -90,13 +90,13 @@ pub(super) fn sound_foldout(f: SoundFold) -> f32 {
         lr.context_menu(|ui| {
             let nm = if s.name.is_empty() { "—" } else { s.name.as_str() };
             ui.label(RichText::new(format!("T{} sound “{nm}” of {}", t + 1, patterns::label(i))).weak());
-            if ui.button("Copy sound  ⌘C").on_hover_text("Paste it into Sounds, Presets, or any audio track on Patterns").clicked() {
+            if ui.button("Copy sound  ⌘C").on_hover_text("Paste it into Pool, Presets, or any audio track on Patterns").clicked() {
                 *copy = Some((i, t));
                 ui.close();
             }
             let label = paste_clip.map(PoolClip::desc).unwrap_or_else(|| "sound".into());
             let ok = editable && paste_clip.is_some_and(|c| c.track_ok.is_ok());
-            let tip = paste_clip.map_or("Copy a sound on Sounds, Presets, or Patterns first", |c| {
+            let tip = paste_clip.map_or("Copy a sound on Pool, Presets, or Patterns first", |c| {
                 c.track_ok.as_ref().err().map(String::as_str).unwrap_or("Replace this track's sound; its trigs and p-locks stay")
             });
             if ui.add_enabled(ok, egui::Button::new(format!("Paste {label} here  ⌘V"))).on_hover_text(tip).on_disabled_hover_text(tip).clicked() {
@@ -168,7 +168,7 @@ pub(super) fn sound_foldout(f: SoundFold) -> f32 {
             } else if pasted {
                 tip += "\n(sound pasted from another pattern)";
             }
-            tip += "\n\nClick to select · ⌘C / ⌘V · right-click to copy or paste sounds across Sounds, Presets and Patterns";
+            tip += "\n\nClick to select · ⌘C / ⌘V · right-click to copy or paste sounds across Pool, Presets and Patterns";
             *hover = Some(tip);
         }
         ty += TRACK_H;
