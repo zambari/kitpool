@@ -131,7 +131,7 @@ impl Default for Panels {
             transport: true,
             nums: true,
             gain: true,
-            histogram: true,
+            histogram: false,
             tools: true,
             scalpel: true,
             minimap: true,
