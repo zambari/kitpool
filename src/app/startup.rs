@@ -182,6 +182,7 @@ impl App {
             pool_focused: false,
             pool_rect: None,
             elek_greeted: false,
+            elek_preloaded: false,
             first_dock: false,
             reconnect_ask: None,
             pool_fetch: Default::default(),

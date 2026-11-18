@@ -130,9 +130,34 @@ impl App {
         }
         self.elek_greeted = true;
         if self.elek.project.is_some() || self.elek.busy.is_some() || self.elek.reading.is_some() {
+            // Read in the background since startup: dock the pool now
+            // (or once the names are in, if it is still reading).
+            if self.elek_preloaded && self.elek.project.as_ref().is_none_or(|p| p.from_file.is_none()) {
+                if self.elek.project.is_some() {
+                    self.first_dock_now();
+                } else if self.elek.reading.is_some() {
+                    self.first_dock = true;
+                }
+            }
             return;
         }
         self.first_dock = true;
+        self.elek_read(Vec::new());
+    }
+
+    /// A device showed up (at startup, or first plugged in this run)
+    /// before the device view was opened: read its project in the
+    /// background, so the Patterns page is ready when it is. The layout
+    /// is left alone until the device view is entered ([`Self::greet_device`]).
+    pub(super) fn preload_elek(&mut self) {
+        if self.elek_greeted || self.elek_preloaded {
+            return;
+        }
+        if self.elek.project.is_some() || self.elek.busy.is_some() || self.elek.reading.is_some() {
+            return;
+        }
+        self.elek_preloaded = true;
+        crate::log::line("elek: device detected; reading its project in the background");
         self.elek_read(Vec::new());
     }
 
@@ -171,8 +196,9 @@ impl App {
             self.elek_read(Vec::new());
             return;
         }
-        if st.project.is_none() && !self.elek_greeted {
-            // Never read: the first visit to the device view reads it.
+        if st.project.is_none() && !self.elek_greeted && !self.elek_preloaded {
+            // Never read: start reading it in the background.
+            self.preload_elek();
             return;
         }
         let edits = st.changed() + st.filling.len();

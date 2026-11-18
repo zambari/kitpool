@@ -365,6 +365,9 @@ pub struct App {
     /// The device view was entered once this run: the first entry reads
     /// the project by itself.
     elek_greeted: bool,
+    /// The project read was started in the background when the device
+    /// first showed up this run, before the device view was opened.
+    elek_preloaded: bool,
     /// That first read is running: once the names are in, show the
     /// Patterns page with the pool docked beside it.
     first_dock: bool,

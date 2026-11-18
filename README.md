@@ -6,6 +6,7 @@ A desktop app for digging through a sample library, cutting out the good
 bits, and getting them onto an Elektron Digitakt, then tidying up the
 project on the device without menu-diving on its screen.
 
+Get it from releases sections if you don't want to build yourself, available for MacOS and Windows.s
 
 
 ![Sample editor with the standard panels: gain, tools, file row, waveform, numbers and scalpel close-up](docs/editor.png)

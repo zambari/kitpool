@@ -382,7 +382,13 @@ impl App {
                     None => {}
                 }
             }
-            Presence::One(name) => self.last_unit = Some(name),
+            Presence::One(name) => {
+                self.last_unit = Some(name);
+                // First sight of the device this run (startup).
+                if before == Presence::Unknown {
+                    self.preload_elek();
+                }
+            }
             _ => {}
         }
     }

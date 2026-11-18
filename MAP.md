@@ -240,6 +240,7 @@ There are two mechanisms, and only the device one is a real queue.
 | SysEx wire format, command codes, 7-bit coding | `src/device/proto.rs` |
 | Finding the port, handshake, product ids | `src/device/conn.rs` (`elektron_port`, `product`, `Conn::open`) |
 | Plugged in or not (port scan) | `src/device/presence.rs`; reaction in `App::track_presence` |
+| Background project read when the device is first seen this run (startup, or first plug-in before the device view was opened); the pool docks on first entry to the device view | `App::preload_elek`, `App::greet_device` in `src/app/elek.rs`; flag `App::elek_preloaded`; called from `App::track_presence` (Unknown → One) and `App::device_reconnected` |
 | Device sample format and WAV conversion | `src/device/sample.rs` |
 | Upload / download / copy / move / delete, `/trash` | `src/device/transfer.rs`; `device::TRASH` |
 | Project dump: models, struct sizes per version, slot references, usage counts | `src/device/elek.rs` (`Model`, `Scan`, `SlotRef`, `ElekProject`) |
