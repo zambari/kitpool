@@ -620,9 +620,18 @@ pub fn install_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
     fonts.font_data.insert(
         "frucade".to_owned(),
-        std::sync::Arc::new(egui::FontData::from_static(include_bytes!(
-            "../../assets/frucade.ttf"
-        ))),
+        std::sync::Arc::new(
+            egui::FontData::from_static(include_bytes!("../../assets/frucade.ttf"))
+                // Frucade ships TrueType hinting instructions that wreck its
+                // outlines at small pixel sizes: at 1.0 pixels per point (a
+                // 100%-scaled Windows display) every glyph rasterizes as a
+                // solid box. Retina Macs render it twice as large and dodge
+                // it. A pixel font gains nothing from hinting anyway.
+                .tweak(egui::FontTweak {
+                    hinting: Some(false),
+                    ..Default::default()
+                }),
+        ),
     );
     let mut fam = vec!["frucade".to_owned()];
     fam.extend(
