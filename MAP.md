@@ -43,12 +43,12 @@ for a row, menu or action; the entry file need not be read in full each time.
 
 | Control | Where |
 |---|---|
-| **SAMPLE MANAGER** title button (neutral text, hover effect): About popup with package version, build number, UTC build date, GitHub repository and personal website links (full URLs as labels) | `infobox::show` in `src/ui/infobox.rs`, called by `App::toolbar`; version / repository / homepage in `Cargo.toml`, automatic build identity in `build.rs` |
+| **KITPOOL** title button (neutral text, hover effect): About popup with package version, build number, UTC build date, GitHub repository and personal website links (full URLs as labels) | `infobox::show` in `src/ui/infobox.rs`, called by `App::toolbar`; version / repository / homepage in `Cargo.toml`, automatic build identity in `build.rs` |
 | **New build: relaunch** | `App::toolbar`; watcher in `src/app/relaunch.rs` |
 | Audio output picker, ⟳ rescan | `App::device_picker` |
 | Volume slider, L/R meter, phase strip | `App::volume_and_meter`, `App::phase_strip` |
 | Pitch fader | `App::pitch_fader` |
-| **Commit to destination**, **Move**, `keys:` profile label | `App::toolbar` |
+| `keys:` profile label | `App::toolbar` |
 
 ### Bottom status bar: `App::status_bar` in `src/app/bars.rs`
 
@@ -294,7 +294,7 @@ There are two mechanisms, and only the device one is a real queue.
 | **grid kit** | A SliceKit laid out on 4 / 8 / 16 equal slots (only while the marker padlock is locked). | `src/editor/grid.rs` |
 | **trim**, **tails**, **fades** (kits) | Cutting each slice's tail below a threshold. | `src/editor/trim.rs`, `src/editor/fade.rs`; UI in `src/ui/editor_view/trim.rs`, `strip.rs` |
 | **source**, **destination**, **pane** | The left and right file columns (`Role::Source`, `Role::Dest`), each a `Pane` of `DirTab`s. | `src/pane.rs`, `src/tab.rs` |
-| **commit** | Copy the source selection into the active destination tab; a single file open in the editor is written as heard. | `App::commit` in `src/app/transfers.rs` |
+| **commit** | Enter: copy the source selection into the active destination tab (nothing selected does nothing); a single selected file open in the editor is written as heard. | `App::commit` in `src/app/transfers.rs` |
 | **export** | Write the editor's selection to the destination. | `App::export*` in `src/app/editing.rs`, `Editor::export_with`, `src/audio/export.rs` |
 | **update on device**, **pool edit** | A pool sample opened in the editor from its slot; ⌘S (**⬆ Save → slot**) uploads it next to the original, fill the same slot and push. | `src/app/pool_edit.rs` (`PoolEdit`, `update_on_device`, `pool_edit_filled`) |
 | **save to slot** | Save to ⏷ → the editor's sample put into the selected slot (a filled one is replaced after a question) or the first empty one; once it lands it becomes a pool edit of that slot. | `src/app/pool_edit.rs` (`SlotSave`, `save_to_slot`, `slot_save_upload`) |

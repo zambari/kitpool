@@ -151,7 +151,6 @@ impl App {
             // The editor's file as you hear it, like a local commit.
             let editor_file = !from_dev && kind == Kind::Copy && self.editor.current.is_some();
             let as_heard = match sources.as_slice() {
-                [] => editor_file,
                 [only] => {
                     editor_file
                         && self.editor.path() == Some(only.as_path())
@@ -169,12 +168,6 @@ impl App {
             return;
         }
         let sources = self.pane(Role::Source).active_tab().effective_selection();
-        // Nothing selected (e.g. right after launch, with a file restored in
-        // the editor): commit the editor's file as you hear it.
-        if sources.is_empty() && kind == Kind::Copy && self.editor.current.is_some() {
-            self.export();
-            return;
-        }
         if sources.is_empty() {
             self.status = "Nothing selected in the source pane".to_owned();
             return;

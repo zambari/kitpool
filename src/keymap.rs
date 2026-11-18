@@ -199,47 +199,6 @@ impl Keymap {
         hits.sort_by(|a, b| b.0.cmp(&a.0));
         hits.into_iter().map(|(_, a)| a).collect()
     }
-
-    pub fn describe(&self, action: Action) -> String {
-        self.bindings
-            .iter()
-            .find(|(_, a)| *a == action)
-            .map(|(c, _)| format_chord(*c))
-            .unwrap_or_default()
-    }
-}
-
-pub fn format_chord(c: Chord) -> String {
-    let mut s = String::new();
-    let mac = cfg!(target_os = "macos");
-    if c.mods.command || c.mods.mac_cmd {
-        s.push_str(if mac { "⌘" } else { "Ctrl+" });
-    } else if c.mods.ctrl {
-        s.push_str(if mac { "⌃" } else { "Ctrl+" });
-    }
-    if c.mods.shift {
-        s.push_str(if mac { "⇧" } else { "Shift+" });
-    }
-    if c.mods.alt {
-        s.push_str(if mac { "⌥" } else { "Alt+" });
-    }
-    s.push_str(match c.key {
-        Key::Enter => "↩",
-        Key::Space => "Space",
-        Key::Backspace => {
-            if mac {
-                "⌫"
-            } else {
-                "Backspace"
-            }
-        }
-        Key::ArrowUp => "↑",
-        Key::ArrowDown => "↓",
-        Key::ArrowLeft => "←",
-        Key::ArrowRight => "→",
-        other => other.name(),
-    });
-    s
 }
 
 // ---- sample editor ----------------------------------------------------------

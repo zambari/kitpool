@@ -1,4 +1,6 @@
-# Sample Manager
+# KitPool
+
+*Formerly Sample Manager.*
 
 A desktop app for digging through a sample library, cutting out the good
 bits, and getting them onto an Elektron Digitakt, then tidying up the
@@ -406,14 +408,14 @@ Install Rust from <https://rustup.rs>, then:
 The script's header lists the other options (`bundle`, `windows`, `dev`,
 `test`, `clean`).
 
-Click **SAMPLE MANAGER** in the toolbar for the version, build number, build date and
+Click **KITPOOL** in the toolbar for the version, build number, build date and
 repository and personal website links. The release version and both URLs come from
 `Cargo.toml`; bump its package version for a release. `build.rs` stamps each
 changed build with a build number (Unix time in seconds) and a readable UTC
 build date, including when building from a source archive without Git.
 
 **Windows from a Mac.** `./build.sh windows` cross-compiles a 64-bit `.exe`
-into `target/bundle/Sample Manager Windows.zip`. It needs
+into `target/bundle/KitPool Windows.zip`. It needs
 [cargo-xwin](https://github.com/rust-cross/cargo-xwin)
 (`cargo install cargo-xwin --locked`). The first build downloads Microsoft's
 C runtime and Windows SDK into cargo-xwin's cache, which means accepting
@@ -429,12 +431,12 @@ source. Our command codes, 7-bit encoding, transfer chunk size and the
 
 ---
 
-¹ **Licensing note.** Sample Manager has its own Rust implementation of the
+¹ **Licensing note.** KitPool has its own Rust implementation of the
 protocol. It contains no elk-herd source code (elk-herd is written in Elm).
 What we took from elk-herd is knowledge of how the protocol works, not its
 code.
 
-Sample Manager uses these third-party Rust crates, each under its own
+KitPool uses these third-party Rust crates, each under its own
 licence: `eframe`/`egui` (UI), `cpal` (audio output), `symphonia`
 (decoding), `hound` (WAV writing), `midir` (MIDI), `drag` and `mouse_position` (drag and drop with
 Finder / Explorer), `serde`, `trash` and
@@ -445,13 +447,13 @@ License and the Ubuntu Font Licence.
 
 The device-screen pixel font is **[Frucade](http://pixelfonts.style-force.net/)
 by Michael Schmidt** (2005). Frucade is free for personal use only, and
-Michael kindly gave Sample Manager written permission to use it (see
+Michael kindly gave KitPool (then called Sample Manager) written permission to use it (see
 [`assets/frucade-PERMISSION.txt`](assets/frucade-PERMISSION.txt)). The font
-is not covered by Sample Manager's MIT license, so to use it in your own project, ask the author. It is the closest match we found to the Elektron screen font. Thank you, Michael. Run `cargo metadata` or
+is not covered by KitPool's MIT license, so to use it in your own project, ask the author. It is the closest match we found to the Elektron screen font. Thank you, Michael. Run `cargo metadata` or
 [`cargo-about`](https://github.com/EmbarkStudios/cargo-about) for the full
 list. No third-party file-browser library is used; the file browser is written from scratch on top of `walkdir` and `trash`.
 
-Sample Manager itself is released under the [MIT License](LICENSE).
+KitPool itself is released under the [MIT License](LICENSE).
 
 
 Built in Rust with [egui](https://github.com/emilk/egui).

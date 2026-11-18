@@ -360,25 +360,6 @@ impl App {
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 // Right to left: the first widget lands at the far right.
-                let commit_key = self.keymap.describe(Action::Commit);
-                let commit_btn = egui::Button::new(
-                    egui::RichText::new(format!("Commit to destination  {commit_key}")).color(theme::ON_ACCENT),
-                )
-                .fill(theme::ACCENT);
-                if ui
-                    .add(commit_btn)
-                    .on_hover_text(
-                        "Copy the source selection into the active destination tab.\n\
-                         A single file open in the editor is written with its trim, gain and mono settings.",
-                    )
-                    .clicked()
-                {
-                    self.commit(Kind::Copy);
-                }
-                if ui.button("Move").clicked() {
-                    self.commit(Kind::Move);
-                }
-                ui.separator();
                 ui.label(
                     egui::RichText::new(format!("keys: {}", self.keymap.name))
                         .weak()

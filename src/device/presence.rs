@@ -136,7 +136,7 @@ pub fn start(ctx: egui::Context) {
 fn scan() -> Presence {
     // A fresh client each time: a long-lived one may not see ports come and
     // go without a run loop.
-    let Ok(input) = midir::MidiInput::new("Sample Manager presence") else {
+    let Ok(input) = midir::MidiInput::new("KitPool presence") else {
         return Presence::Unknown;
     };
     let mut names: Vec<String> = input

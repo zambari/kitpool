@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Build Sample Manager.
+# Build KitPool.
 #
 # Usage:
 #   ./build.sh          release build  -> target/release/sample_manager
 #   ./build.sh run      release build, then launch the app
 #   ./build.sh bundle   universal (Intel + Apple Silicon) .app, zipped
-#                       -> target/bundle/Sample Manager.zip
+#                       -> target/bundle/KitPool.zip
 #   ./build.sh windows  64-bit Windows .exe, cross-compiled with cargo-xwin
-#                       -> target/bundle/Sample Manager Windows.zip
+#                       -> target/bundle/KitPool Windows.zip
 #   ./build.sh dev      debug build (faster to compile, slower to run)
 #   ./build.sh test     run the test suite
 #   ./build.sh clean    delete build output
@@ -32,7 +32,7 @@ case "$mode" in
     cargo run --release
     ;;
   bundle)
-    app_name="Sample Manager"
+    app_name="KitPool"
     version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
     out="target/bundle"
     app="$out/$app_name.app"
@@ -66,7 +66,7 @@ case "$mode" in
   <key>CFBundleShortVersionString</key><string>$version</string>
   <key>LSMinimumSystemVersion</key><string>11.0</string>
   <key>NSHighResolutionCapable</key><true/>
-  <key>NSMicrophoneUsageDescription</key><string>Sample Manager uses audio devices to play samples.</string>
+  <key>NSMicrophoneUsageDescription</key><string>KitPool uses audio devices to play samples.</string>
 </dict>
 </plist>
 PLIST
@@ -89,14 +89,14 @@ PLIST
     cargo xwin build --release --target "$target"
 
     out="target/bundle"
-    stage="$out/Sample Manager"
-    rm -rf "$stage" "$out/Sample Manager Windows.zip"
+    stage="$out/KitPool"
+    rm -rf "$stage" "$out/KitPool Windows.zip"
     mkdir -p "$stage"
-    cp "target/$target/release/sample_manager.exe" "$stage/Sample Manager.exe"
-    (cd "$out" && zip -qr "Sample Manager Windows.zip" "Sample Manager")
+    cp "target/$target/release/sample_manager.exe" "$stage/KitPool.exe"
+    (cd "$out" && zip -qr "KitPool Windows.zip" "KitPool")
     rm -rf "$stage"
     echo
-    echo "Built: $(pwd)/$out/Sample Manager Windows.zip"
+    echo "Built: $(pwd)/$out/KitPool Windows.zip"
     ;;
   dev)
     cargo build

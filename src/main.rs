@@ -26,7 +26,7 @@ fn main() -> eframe::Result {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1560.0, 880.0])
             .with_min_inner_size([960.0, 520.0])
-            .with_title("Sample Manager")
+            .with_title("KitPool")
             .with_icon(
                 eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png"))
                     .expect("bundled icon is a valid PNG"),
@@ -39,8 +39,10 @@ fn main() -> eframe::Result {
     // here on the main thread, whose run loop the UI keeps turning; created
     // first on the device thread, the port list would never update and a
     // swapped device would keep being looked for under its old port.
-    let _midi = midir::MidiInput::new("Sample Manager");
+    let _midi = midir::MidiInput::new("KitPool");
 
+    // The app is called KitPool, but eframe uses this id as the folder for
+    // saved window and UI state. Keep the old name so existing settings load.
     eframe::run_native(
         "Sample Manager",
         native_options,

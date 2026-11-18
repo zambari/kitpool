@@ -1,4 +1,4 @@
-# Sample Manager
+# KitPool
 
 ## Finding things
 

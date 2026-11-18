@@ -26,7 +26,7 @@ pub(super) struct Conn {
 /// Is a MIDI input called `name` still there? A fresh client each time:
 /// a long-lived one may not see ports come and go without a run loop.
 pub(super) fn port_present(name: &str) -> bool {
-    let Ok(input) = midir::MidiInput::new("Sample Manager probe") else {
+    let Ok(input) = midir::MidiInput::new("KitPool probe") else {
         return true;
     };
     input
@@ -88,7 +88,7 @@ impl Conn {
     /// Try each Elektron-looking port in turn; the first that answers and
     /// has a sample drive wins.
     pub(super) fn open() -> Result<Self, String> {
-        let input = midir::MidiInput::new("Sample Manager").map_err(|e| e.to_string())?;
+        let input = midir::MidiInput::new("KitPool").map_err(|e| e.to_string())?;
         let names: Vec<String> = input
             .ports()
             .iter()
@@ -118,9 +118,9 @@ impl Conn {
     }
 
     pub(super) fn open_port(in_name: &str) -> Result<Self, String> {
-        let mut input = midir::MidiInput::new("Sample Manager").map_err(|e| e.to_string())?;
+        let mut input = midir::MidiInput::new("KitPool").map_err(|e| e.to_string())?;
         input.ignore(midir::Ignore::None);
-        let output = midir::MidiOutput::new("Sample Manager").map_err(|e| e.to_string())?;
+        let output = midir::MidiOutput::new("KitPool").map_err(|e| e.to_string())?;
 
         let in_port = input
             .ports()
@@ -149,7 +149,7 @@ impl Conn {
         let _input = input
             .connect(
                 &in_port,
-                "sample-manager-in",
+                "kitpool-in",
                 move |_, msg, _| {
                     if msg.first() == Some(&0xF0) {
                         let _ = tx.send(msg.to_vec());
@@ -159,7 +159,7 @@ impl Conn {
             )
             .map_err(|e| format!("Detected {in_name}, but could not open its MIDI input. A DAW or another MIDI app may be using it. Disable this device in that app or close the app, then click Retry connection. MIDI input: {e}"))?;
         let out = output
-            .connect(&out_port, "sample-manager-out")
+            .connect(&out_port, "kitpool-out")
             .map_err(|e| format!("Detected {in_name}, but could not open its MIDI output. A DAW or another MIDI app may be using it. Disable this device in that app or close the app, then click Retry connection. MIDI output: {e}"))?;
 
         let mut c = Self {
