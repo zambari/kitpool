@@ -32,6 +32,7 @@ mod bars;
 mod editing;
 mod elek;
 use editing::ExportNaming;
+mod intro;
 mod kit;
 mod layout;
 mod nav;
@@ -339,6 +340,11 @@ pub struct App {
     build_watch: relaunch::BuildWatch,
     /// The window is closing to start the new build.
     relaunch: bool,
+    /// About box → Reset state: the window is closing to start fresh, so
+    /// the last save removes the saved state instead of writing it.
+    reset_state: bool,
+    /// First run: the Show row's switch-off animation.
+    panel_intro: Option<intro::PanelIntro>,
     /// The centre column shows the Elek Sample Order view instead of the editor.
     elek_mode: bool,
     elek: crate::ui::elek_view::ElekState,
@@ -411,14 +417,21 @@ impl App {
 
 impl eframe::App for App {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        eframe::set_value(storage, state::KEY, &self.snapshot(true));
+        if self.reset_state {
+            storage.remove_string(state::KEY);
+        } else {
+            eframe::set_value(storage, state::KEY, &self.snapshot(true));
+        }
     }
 
     fn on_exit(&mut self) {
         if !self.relaunch {
             return;
         }
-        if let Some(exe) = self.build_watch.exe() {
+        // The dev build on disk, else (Reset state in a release build) the
+        // running binary.
+        let exe = self.build_watch.exe().cloned().or_else(|| std::env::current_exe().ok());
+        if let Some(exe) = exe {
             if let Err(e) = std::process::Command::new(exe).spawn() {
                 crate::log::line(format!("error: relaunch failed: {e}"));
             }
@@ -518,6 +531,7 @@ impl eframe::App for App {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.tick_intro(ui.ctx());
         self.show_layout(ui);
         self.cross_ping();
         self.show_pending_dialogs(ui.ctx());

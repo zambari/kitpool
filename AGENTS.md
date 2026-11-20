@@ -2,7 +2,8 @@
 
 ## Finding things
 
-Read [MAP.md](MAP.md) first when a request names a concept, a button or a panel. It covers the vocabulary ("device" and "+Drive" mean an Elektron sampler), which control lives in which function, where styling is set, and where the job queues are. Keep it up to date when you move or rename something it points to.
+Read [MAP.md](MAP.md) first when a request names a concept, a button or a panel. It covers the vocabulary ("device" and "+Drive" mean an Elektron sampler), which control lives in which function, where styling is set, and where the job queues are. 
+If you find an entry wrong, fix it.
 
 ## Workflow rules
 
@@ -10,5 +11,5 @@ Read [MAP.md](MAP.md) first when a request names a concept, a button or a panel.
   ```bash
   cargo build --release
   ```
-  If the build fails, fix it before ending the round. Never run `pkill`/`kill` on `sample_manager` and don't start it yourself. When a newer build lands, the running app shows a **New build: relaunch** button in its toolbar, and the user relaunches when they're ready. Tell them the build is ready to relaunch.
+  If the build fails, fix it before ending the round. Never run `pkill`/`kill` on `kitpool` and don't start it yourself. When a newer build lands, the running app shows a **New build: relaunch** button in its toolbar, and the user relaunches when they're ready. Tell them the build is ready to relaunch.
 - **Don't write tests.** Verify by building instead (the user runs the app). When unsure whether a change works in edge cases, tell the user which edge conditions to try and what symptoms to look for.

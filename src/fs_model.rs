@@ -31,7 +31,7 @@ pub fn volumes() -> Vec<Volume> {
             let path = PathBuf::from(format!("{c}:\\"));
             if path.is_dir() {
                 let name = match win_volume_label(&path) {
-                    Some(label) => format!("{label} ({c}:)"),
+                    Some(label) => format!("{c}: {label}"),
                     None => format!("{c}:"),
                 };
                 out.push(Volume { name, path });

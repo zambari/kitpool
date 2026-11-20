@@ -22,8 +22,16 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-pub const PROJECT_FORMAT: &str = "sample_manager/elk-project";
-pub const PATTERN_FORMAT: &str = "sample_manager/elk-pattern";
+pub const PROJECT_FORMAT: &str = "kitpool/elk-project";
+pub const PATTERN_FORMAT: &str = "kitpool/elk-pattern";
+
+/// Files saved before the rename carry the old app name in their format tag.
+pub fn legacy_format(format: &str) -> String {
+    match format.strip_prefix("sample_manager/") {
+        Some(rest) => format!("kitpool/{rest}"),
+        None => format.to_string(),
+    }
+}
 const VERSION: u32 = 1;
 
 /// One pool slot's file.
@@ -178,8 +186,9 @@ fn head(format: &str, model: Model, structs: String) -> Head {
 
 /// Checks a file's header against what we expect, returning its model.
 fn check(h: &Head, format: &str) -> Result<Model, String> {
-    if h.format != format {
-        let what = match h.format.as_str() {
+    let found = legacy_format(&h.format);
+    if found != format {
+        let what = match found.as_str() {
             PROJECT_FORMAT => "a project file",
             PATTERN_FORMAT => "a pattern file",
             _ => "not a file this app wrote",

@@ -8,7 +8,7 @@ use super::presets::{Preset, PresetEntry, PresetOp, PresetSlot};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-const FORMAT: &str = "sample_manager/elk-presets";
+const FORMAT: &str = "kitpool/elk-presets";
 const VERSION: u32 = 1;
 
 #[derive(Serialize, Deserialize)]
@@ -61,7 +61,7 @@ impl PresetFile {
         }
         let json = std::fs::read(path).map_err(|e| e.to_string())?;
         let f: Self = serde_json::from_slice(&json).map_err(|e| format!("Not a preset backup: {e}"))?;
-        if f.format != FORMAT || f.version != VERSION {
+        if super::file::legacy_format(&f.format) != FORMAT || f.version != VERSION {
             return Err(format!("Unsupported preset file format/version: {} v{}", f.format, f.version));
         }
         if f.model != model.name() {

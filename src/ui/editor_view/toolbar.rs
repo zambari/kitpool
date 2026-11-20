@@ -485,9 +485,31 @@ fn grid_picker(ui: &mut Ui, cur: Option<usize>, out: &mut Vec<EdIntent>) {
         );
 }
 
+/// Pings per Show-row chip label, kept in egui's temp memory.
+type ChipPings = std::collections::HashMap<&'static str, std::time::Instant>;
+
+fn chip_pings_id() -> egui::Id {
+    egui::Id::unique("panel_chip_pings")
+}
+
+/// Flash the Show-row chip `label` (the first-run intro, `src/app/intro.rs`).
+pub fn ping_panel_chip(ctx: &egui::Context, label: &'static str) {
+    ctx.data_mut(|d| {
+        d.get_temp_mut_or_default::<ChipPings>(chip_pings_id())
+            .insert(label, std::time::Instant::now());
+    });
+}
+
 /// Right-aligned chips that show / hide each editor panel. Saved with the prefs.
 pub(super) fn panel_toggles(ui: &mut Ui, p: &mut crate::editor::Panels, kit: bool) {
     section_header(ui, "Show");
+    let mut pings: ChipPings = ui.data(|d| d.get_temp(chip_pings_id())).unwrap_or_default();
+    let ping_secs = crate::ui::file_table::PING_SECS;
+    if pings.values().any(|at| at.elapsed().as_secs_f32() >= ping_secs) {
+        pings.retain(|_, at| at.elapsed().as_secs_f32() < ping_secs);
+        let kept = pings.clone();
+        ui.data_mut(|d| d.insert_temp(chip_pings_id(), kept));
+    }
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
         let items: Vec<(&mut bool, &str, &str)> = vec![
@@ -540,8 +562,12 @@ pub(super) fn panel_toggles(ui: &mut Ui, p: &mut crate::editor::Panels, kit: boo
                 );
                 continue;
             }
-            ui.add(vis_toggle(v, label))
+            let resp = ui
+                .add(vis_toggle(v, label))
                 .on_hover_text(format!("Show / hide: {hover}"));
+            if let Some(&at) = pings.get(label) {
+                crate::ui::file_table::paint_ping(ui, resp.rect, at, crate::ui::theme::ACCENT_BRIGHT);
+            }
         }
     });
 }

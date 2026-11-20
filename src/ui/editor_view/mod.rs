@@ -29,6 +29,7 @@ use overview::overview;
 use scope::scope;
 use trim::trim_section;
 use toolbar::{file_row, header, positions, slot_bar, toolbar};
+pub use toolbar::ping_panel_chip;
 use waveform::{draw_lanes, draw_ruler, marker, slice_marks, waveform};
 
 pub struct PlayView {
@@ -248,12 +249,28 @@ pub fn show(
         } else {
             "Move the cursor onto a sample in Source or Destination to load it here.".to_owned()
         };
-        // Only the empty body takes focus. Covering max_rect here would
+        // The Wave panel is always there, empty with the hint inside until
+        // a file loads. Only that body takes focus: covering max_rect would
         // put a later click target over the header and steal its controls.
-        let empty_body = ui.available_rect_before_wrap();
-        ui.add_space(40.0);
-        ui.vertical_centered(|ui| ui.label(RichText::new(msg).weak()));
-        let resp = ui.interact(empty_body, ui.scope_id().with("empty"), Sense::click());
+        section_header(ui, "Wave");
+        let avail = ui.available_size();
+        let (rect, resp) = ui.allocate_exact_size(vec2(avail.x, (avail.y - 12.0).max(80.0)), Sense::click());
+        let vis = ui.visuals();
+        let painter = ui.painter_at(rect);
+        painter.rect_filled(rect, 2.0, vis.extreme_bg_color);
+        painter.hline(
+            rect.x_range(),
+            rect.center().y,
+            Stroke::new(1.0, vis.weak_text_color().gamma_multiply(0.25)),
+        );
+        let galley = painter.layout(
+            msg,
+            egui::TextStyle::Body.resolve(ui.style()),
+            vis.weak_text_color(),
+            (rect.width() - 24.0).max(40.0),
+        );
+        let pos = rect.center() - galley.size() / 2.0 - vec2(0.0, 18.0);
+        painter.galley(pos, galley, vis.weak_text_color());
         if resp.clicked() {
             out.push(EdIntent::TookFocus);
         }

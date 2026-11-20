@@ -23,6 +23,13 @@ pub(super) struct Conn {
     pub(super) probed: Instant,
 }
 
+impl Drop for Conn {
+    /// The ports close with the connection.
+    fn drop(&mut self) {
+        super::presence::set_claimed(None);
+    }
+}
+
 /// Is a MIDI input called `name` still there? A fresh client each time:
 /// a long-lived one may not see ports come and go without a run loop.
 pub(super) fn port_present(name: &str) -> bool {
@@ -134,12 +141,12 @@ impl Conn {
             .into_iter()
             .filter_map(|p| Some((output.port_name(&p).ok()?, p)))
             .collect();
-        let out_port = match outs.iter().find(|(n, _)| n == in_name) {
-            Some((_, p)) => p.clone(),
+        let (out_name, out_port) = match outs.iter().find(|(n, _)| n == in_name) {
+            Some((n, p)) => (n.clone(), p.clone()),
             None => {
                 let mut el = outs.iter().filter(|(n, _)| elektron_port(n));
                 match (el.next(), el.next()) {
-                    (Some((_, p)), None) => p.clone(),
+                    (Some((n, p)), None) => (n.clone(), p.clone()),
                     _ => return Err("no matching MIDI output".into()),
                 }
             }
@@ -177,6 +184,8 @@ impl Conn {
             .connect(&out_port, "kitpool-out")
             .map_err(|e| format!("Detected {in_name}, but could not open its MIDI output. A DAW or another MIDI app may be using it. Disable this device in that app or close the app, then click Retry connection. MIDI output: {e}"))?;
 
+        // Both ports are open from here; `Drop` clears this again.
+        super::presence::set_claimed(Some((in_name.to_owned(), out_name)));
         let mut c = Self {
             out,
             _input,

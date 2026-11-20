@@ -142,6 +142,26 @@ impl Default for Panels {
     }
 }
 
+impl Panels {
+    /// Every panel shown: where the first-run intro starts before it
+    /// switches the extra ones off, ending on [`Panels::default`].
+    pub fn all_on() -> Self {
+        Self {
+            kit: true,
+            transport: true,
+            nums: true,
+            gain: true,
+            histogram: true,
+            tools: true,
+            scalpel: true,
+            minimap: true,
+            stats: true,
+            help: true,
+            trim_tails: true,
+        }
+    }
+}
+
 impl Prefs {
     /// Remember the live mono setting as the kit's or the sample's.
     pub fn stash_mono(&mut self, kit: bool) {

@@ -51,7 +51,7 @@ impl App {
         }
     }
 
-    /// Master volume slider, then a black strip running to the right-hand
+    /// Master volume slider, then an unfilled strip running to the right-hand
     /// controls. The L/R level meter sits on the strip; while a stereo sample
     /// plays, the strip shows a wide, flat slice of a phase scope.
     fn volume_and_meter(&mut self, ui: &mut egui::Ui) {
@@ -99,8 +99,16 @@ impl App {
 
         let (rect, resp) = ui.allocate_exact_size(egui::vec2(96.0, 12.0), egui::Sense::hover());
         let p = ui.painter();
-        p.rect_filled(rect, 1.0, ui.visuals().extreme_bg_color);
         const FLOOR_DB: f32 = -48.0;
+        const FIRST_TICK_DB: f32 = -24.0;
+        let hold_db =
+            crate::audio::stats::to_db(self.meter_hold[0].max(self.meter_hold[1]).max(1e-6));
+        // Background and ticks fade out as the held peak falls from the
+        // first tick to the floor, so an idle meter is invisible.
+        let bg_alpha = ((hold_db - FLOOR_DB) / (FIRST_TICK_DB - FLOOR_DB)).clamp(0.0, 1.0);
+        if bg_alpha > 0.0 {
+            p.rect_filled(rect, 1.0, ui.visuals().extreme_bg_color.gamma_multiply(bg_alpha));
+        }
         let x_of = |lin: f32| {
             let db = crate::audio::stats::to_db(lin.max(1e-6));
             rect.left() + rect.width() * ((db - FLOOR_DB) / -FLOOR_DB).clamp(0.0, 1.0)
@@ -135,15 +143,18 @@ impl App {
             }
         }
         // Tick marks at -24, -12, -6 and 0 dB.
-        for db in [-24.0, -12.0, -6.0] {
-            let x = x_of(crate::audio::stats::from_db(db));
-            p.line_segment(
-                [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
-                egui::Stroke::new(1.0, egui::Color32::from_black_alpha(140)),
-            );
+        if bg_alpha > 0.0 {
+            for db in [FIRST_TICK_DB, -12.0, -6.0] {
+                let x = x_of(crate::audio::stats::from_db(db));
+                p.line_segment(
+                    [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
+                    egui::Stroke::new(
+                        1.0,
+                        egui::Color32::from_black_alpha(140).gamma_multiply(bg_alpha),
+                    ),
+                );
+            }
         }
-        let hold_db =
-            crate::audio::stats::to_db(self.meter_hold[0].max(self.meter_hold[1]).max(1e-6));
         resp.on_hover_text(format!(
             "Output level, top L, bottom R (-48..0 dBFS)\nPeak {}",
             if hold_db < -90.0 {
@@ -167,7 +178,9 @@ impl App {
             .y_range();
         let strip = egui::Rect::from_x_y_ranges(strip_left..=ui.max_rect().right(), ys);
         if strip.width() > 4.0 {
-            let mut shapes = vec![egui::Shape::rect_filled(strip, 0.0, egui::Color32::BLACK)];
+            // No fill of its own: the strip shares the app background, and
+            // only the phase scope draws on it.
+            let mut shapes = Vec::new();
             if self.engine.is_stereo() {
                 self.phase_strip(strip, &mut shapes);
             }
@@ -339,7 +352,16 @@ impl App {
 
     pub(super) fn toolbar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            crate::ui::infobox::show(ui);
+            let idle = self.active_jobs.is_empty();
+            if let Some(crate::ui::infobox::AboutIntent::ResetState) =
+                crate::ui::infobox::show(ui, crate::device::midi_ports, idle)
+            {
+                // Closing asks about unsaved edits first; `save` then
+                // removes the state and `on_exit` starts the app again.
+                self.reset_state = true;
+                self.relaunch = true;
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+            }
 
             if self.build_watch.ready() {
                 ui.separator();

@@ -56,6 +56,11 @@ impl App {
         let mut prefs = saved.as_ref().map(|s| s.editor.clone()).unwrap_or_default();
         // Starts on the browsed sample.
         prefs.load_mono(false);
+        // First run: every panel on, then the intro switches the extra ones off.
+        let panel_intro = saved.is_none().then(intro::PanelIntro::new);
+        if panel_intro.is_some() {
+            prefs.panels = crate::editor::Panels::all_on();
+        }
         let mut editor = Editor::new(ctx.clone(), prefs);
         let session = saved
             .as_ref()
@@ -170,6 +175,8 @@ impl App {
             device_origin: None,
             send_back: None,
             relaunch: false,
+            reset_state: false,
+            panel_intro,
             elek_mode: false,
             elek: Default::default(),
             seen_file: [None, None],
@@ -255,6 +262,7 @@ impl App {
             editor: {
                 let mut p = self.editor.prefs.clone();
                 p.stash_mono(self.showing_kit);
+                p.panels = self.panels_to_save();
                 p
             },
             output_device: self.output_device.clone(),

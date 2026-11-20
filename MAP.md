@@ -1,313 +1,107 @@
 # Map
 
-Where to start reading when a concept comes up. Names are files and
-functions, not line numbers; grep the function name. Every file has a `//!`
-header that says what it owns, so read that first.
+Only what grep won't tell you: vocabulary, rules, indirections, gotchas.
+For "which function draws button X", grep the label. Every file has a `//!`
+header saying what it owns; read that first. The old exhaustive
+control→function tables are in [MAP_full.md](MAP_full.md) (not maintained).
 
-User-facing behaviour is described in [README.md](README.md). Device format
-research lives in `project_discovery.md` and `project_management_discovery.md`
-(local only, gitignored).
+## Architecture and rules
 
-## Architecture in five lines
-
-- `src/app/mod.rs`: the `App` struct, `logic()` (absorbs worker results every
-  frame, even when hidden) and `ui()` (`show_layout`, cross-pointing, then
-  `show_pending_dialogs`, keyboard handling and editor history).
-  Layout is in `src/app/layout.rs`, pending modals in `src/app/pending_dialogs.rs`,
-  and construction / session snapshots in `src/app/startup.rs`. Other `App`
-  methods are split across `src/app/*.rs` by topic.
-- `src/ui/*`: drawing and mouse handling only. Views take state, return intents.
-- `src/editor/*`, `src/audio/*`: the sample editor's model and DSP. No egui in `audio`.
-- `src/device/*`: one worker thread owning the MIDI link.
-- Two rules: `ui()` never does I/O (post a request, draw from cached state),
-  and everything a worker produces comes back as a `jobs::Ev`, handled in
-  `App::absorb` (`src/app/transfers.rs`).
-
-
-## Module boundaries
-
-Entry modules keep shared types and public paths. Read the owning child file
-for a row, menu or action; the entry file need not be read in full each time.
-
-| Entry | Responsibility files |
-|---|---|
-| `src/ui/file_table.rs` | `file_table/rows.rs`: row layout, selection, drag/drop, inline rename; `cells.rs`: cell painting and fonts; `menu.rs`: context actions and footer buttons; `effects.rs`: ping/save marks |
-| `src/ui/elek_view.rs` | `elek_view/state.rs`: loaded pool and lookup; `editing.rs`: edits, clipboard, undo; `keys.rs`: shortcuts; `chrome.rs`: device bars and page controls; `slots.rs`: bank panes and rows; `slot_menu.rs`: context actions and tooltips; `dialogs.rs`: confirmations |
-| `src/ui/elek_project_view.rs` | `elek_project_view/state.rs`: pattern selection/view state; `clipboard.rs`: track/sound clips; `edit.rs`: pattern edits; `controls.rs`: page controls/keys; `list.rs`: list orchestration and deferred actions; `rows.rs`: bank/track rows and pattern menu; `sounds.rs`: sound foldout; `steps.rs`: step/byte/timing visuals |
-| `src/ui/editor_view/waveform.rs` | `waveform/geometry.rs`: frame snapshots, hit detection, snapping, drag updates; `input.rs`: navigation, mouse dispatch, slice menu; `lanes.rs`: audio lane painting; `paint.rs`: wave layers, fades, trim, ruler and marker painting |
-| `src/app/mod.rs` | `startup.rs`: construction/session restore/snapshot; `layout.rs`: bars/columns/dividers; `pending_dialogs.rs`: modal answers and close/save follow-ups; frame logic and shared app state stay in `mod.rs` |
-| `src/app/elek.rs` | Lifecycle, connection handling and column layout stay in the entry; `elek/commands.rs`: intents/push/read requests; `samples.rs`: uploads/previews/cache/local updates; `files.rs`: project/pattern files/bundles/imports; `events.rs`: worker answers; `readback.rs`: load completion and verification |
-
-
-### Top toolbar: `App::toolbar` in `src/app/bars.rs`
-
-| Control | Where |
-|---|---|
-| **KITPOOL** title button (neutral text, hover effect): About popup with package version, build number, UTC build date, GitHub repository and personal website links (full URLs as labels) | `infobox::show` in `src/ui/infobox.rs`, called by `App::toolbar`; version / repository / homepage in `Cargo.toml`, automatic build identity in `build.rs` |
-| **New build: relaunch** | `App::toolbar`; watcher in `src/app/relaunch.rs` |
-| Audio output picker, ⟳ rescan | `App::device_picker` |
-| Volume slider, L/R meter, phase strip | `App::volume_and_meter`, `App::phase_strip` |
-| Pitch fader | `App::pitch_fader` |
-| `keys:` profile label | `App::toolbar` |
-
-### Bottom status bar: `App::status_bar` in `src/app/bars.rs`
-
-Progress bar for the whole queue, per-file bar, **Cancel** / **Cancel all**,
-status text, latest error, ETA (`Batch::started_at`, average byte rate). Device page feedback
-(including copy/paste on Patterns, Presets and Pool) appears here as a single
-truncated line with the full message on hover; preset push failures also stay
-above the preset list. Data: `ActiveJob` and `Batch` in `src/app/mod.rs`,
-`ElekState::status` and `PresetView::status`.
-
-### File pane (Source / Destination): `App::show_pane` in `src/app/pane_view.rs`
-
-| Control | Where |
-|---|---|
-| Pane title, path label / typed path bar | `show_pane`; `App::path_editor` in `src/app/nav.rs` |
-| `💾 ⏷` drives menu (Windows: volume label + letter), ★ favourites menu | `App::favourites_menu`, `App::drives_menu` in `src/app/nav.rs` |
-| Device connection badge (● name / offline) | `App::device_badge` |
-| Tab strip, `+` new tab, 🎹 open +Drive tab (Source only), × close, tab right-click menu, drops on tabs. The Destination strip lists local tabs only and is hidden while +DRIVE shows | `App::tab_strip` |
-| Sort headers, filter box, **🌲 Tree**, **All files**, **Shorten** | `header` in `src/ui/file_table.rs` |
-| Rows, check marks, speaker icon, inline rename | `row`, `row_interactions`, `folder_drop`, `rename_editor` in `src/ui/file_table/rows.rs`; `draw_cells`, `draw_device_cells` in `src/ui/file_table/cells.rs` |
-| Row right-click menu (Open, Load as kit, Cut/Copy, Make mono copy, Remove duplicates…, Show on device…) | `row_menu` in `src/ui/file_table/menu.rs`; handled where `show_pane` matches on `Intent` |
-| Paste / New folder / reveal buttons | `paste_button`, `new_folder_button`, `reveal_button` in `src/ui/file_table/menu.rs` |
-| After a single +Drive rename (inline or pool slot): offer to rename the linked local copy too | `relink_after` set in `App::do_rename` / `ElekIntent::RenameFile`; `App::offer_local_rename`, `App::rename_local_copy` in `src/app/actions.rs`; dialog `dialogs::rename_local` |
-| Multi-rename panel | `src/ui/rename_view.rs`; logic `src/rename.rs` |
-| Footer counts | `App::pane_footer_text` |
-
-### Sample editor (centre): `editor_view::show` in `src/ui/editor_view/mod.rs`
-
-Drawn top to bottom; intents handled in `App::show_editor` (`src/app/editing.rs`).
-
-| Control | Where (`src/ui/editor_view/`) |
-|---|---|
-| "Sample Editor" title, **Device** switch, Samples / Patterns / Presets / Pool / +Drive tabs | `toolbar.rs` `header`; switch widget is `theme::device_switch`; tabs `elek_view::device_pages` (`DevicePick`). One lit at a time: +Drive from the top goes back to the editor (`ElekIntent::ShowDrive`). Tabs fold away while the device is unplugged or switched off |
-| **Device** switch click: switch the device off (close device view, docked pool, +Drive tabs; close MIDI ports; stop the presence scan, so a DAW can use it) or back on. Unplugging folds the same panels but keeps scanning. The switch is white while a device is connected; on (re)connect the last device subpage (`App::device_last`, a `DevicePick`) opens again | `App::toggle_device`, `App::fold_device` in `src/app/elek.rs` (`EdIntent::ToggleDevice`, `ElekIntent::ToggleDevice`); `Presence::Off`, `device::switched_off`, `presence::set_off`; worker side `Cmd::Release`, `Worker::release`, refusal in `Worker::with_conn`; unplug fold in `App::track_presence` |
-| **Show** row of panel toggles | `toolbar.rs` `panel_toggles`; flags in `editor::Panels` |
-| Sample / Kit tabs (file-pane tab style, `theme::pane_tab`), kit switcher ▾, ×, **Close all kits** | `toolbar.rs` `slot_bar`, `slot_tabs`, `kit_tab`, `kit_switcher` |
-| **Kit** section (toggle in Show, `Panels::kit`): accent → (K) button, fill boxes (muted grey when full), grid picker, **Start New Grid Kit** (alone and accent-filled when no kit is open) | `toolbar.rs` `kit_section`, `add_slice_button`, `fill_boxes`, `grid_picker` |
-| **Transport** (play, Loop, Follow, Snap to 0, Auto-load, Auto-play; toggles are `theme::soft_toggle`), **Gain** (slider, Normalize, Reset), **Histogram** (`level_strip.rs` `histogram_panel`: level bars, tiny dropdowns `theme::tiny_pick`, nerd stats box; cached data in `src/editor/level_hist.rs`), **Tools** (undo/redo, cut/copy/paste, +100 ms, Crop, loop halve/double) | `toolbar.rs` `toolbar` |
-| Stereo / Mix / L / R | `toolbar.rs` `mono_picker` |
-| **File** row: **Save over …** / **⬆ Save → slot …** (names its target), **Export → …** (names a +Drive folder or the pool slot; `Slots::export_drive`), Export and close (kits, the accent one there), **Save to ⏷** menu (kits too) (over the original, pool slot: selected / first empty, new +Drive file) | `toolbar.rs` `file_row`, `save_to_menu`; overwrites confirmed by `dialogs::confirm_overwrite` via `App::save_confirm` (`SaveConfirm`, `App::confirmed_save` in `src/app/pool_edit.rs`) |
-| Which file is open (Original / Device copy / changed since upload / Same audio as on device, with the original's path), click to show in source pane; then the pool slot it is on the device as (`pool A012`, amber `not identical`, `? (same name)`), click to flash it | `toolbar.rs` `origin_line`; worked out by `App::editor_origin` (slot via `App::pool_match`), shown by `App::show_in_source` / `App::origin_in_pool` in `src/app/editing.rs` |
-| **⬆ Save → slot …**: the Save button when the sample was opened from a pool slot | `file_row` (`Slots::pool_slot`); logic in `src/app/pool_edit.rs` |
-| **Save to ⏷ → pool slot**: the one selected slot (empty, or replace after a question) or the first empty one; fills it and pushes | `save_to_menu` (`Slots::pool`, `PoolTargets`, `SlotPick`); `ElekState::lone_sel`, `first_free`; logic `App::save_to_slot`, `save_into_slot`, `SlotSave` in `src/app/pool_edit.rs` |
-| Kit save safety: a kit never saves over (or renames) a file its slices came from | `Editor::note_source`, `path_is_source`; kit-file test `kit::is_collection` (our `slnm` chunk via `cues::is_ours`, or `[N]` name with cues) |
-| Kit slice right-click: **Reveal in source pane** / **Reveal in sample pool** (faint wash on the slice while open). Slices keep their source's full path (`Editor::names`, saved in the `slnm` chunk by `cues::append_names`; older kits have bare names; a slice with no usable name, e.g. in a kit fetched from the device, is looked up by its audio among fingerprinted files); the pool slot is found by a link's +Drive hash, else by audio fingerprint, else by file name (then marked not identical / not compared) | menu `slice_menu` in `waveform/input.rs` (`Editor::slice_menu`, `SliceHome`); resolved by `App::slice_homes`, `App::slice_in_pool` in `src/app/editing.rs`; `App::slice_local`, `App::pool_match` in `src/app/prints.rs`; slice prints `prints::range_keys`, `Editor::slice_bounds`; `ElekState::slot_holding` |
-| **Trim** section (kits) | `trim.rs` `trim_section`, `strip.rs` |
-| **Wave**: lanes, ruler, in/out and slice markers, fade handles, all mouse handling | `waveform.rs` registers widgets and orchestrates `waveform/input.rs` (`update_wave_view`, `handle_wave_mouse`), `geometry.rs` (`WaveGeometry`, shared hit/drag priority and updates), `lanes.rs` (`draw_lanes`) and `paint.rs` (`paint_waveform`, overlays); `WaveHot` in `input.rs` carries hover feedback |
-| Marker **padlock** (top right of the ruler, SliceKits with markers): locked = markers fixed, a grid keeps its slots (cuts padded back); unlocked = no grid (audio untouched), cuts close up, markers draggable by ruler tab or line (zero-snapped with Snap to 0); grid picker greyed while unlocked | `lock_rect` in `waveform.rs`, `padlock` in `waveform/paint.rs`, marker hit/drag handling in `waveform/geometry.rs`; `Editor::markers_locked`, `set_markers_locked` (`grid.rs`), `move_marker`, `marker_index`, `markers_moved` (`clip.rs`), `Drag::Marker`; `Slots::kit_unlocked` |
-| Grid padding overlay: each slot's silence after its sound, solid dark | `paint_waveform` in `waveform/paint.rs` (after `draw_lanes`), data `Editor::slot_sounds`; colour `PAD_COLOR` |
-| **Nums** | `toolbar.rs` `positions` |
-| **Scalpel** | `scope.rs` |
-| **Map** | `overview.rs` |
-| **Stats**: levels, loudness, phase meter, waterfall | `stats_view.rs`; analysis in `src/editor/analysis.rs`, `src/audio/loudness.rs`, `spectrum.rs`, `stats.rs` |
-| **Help** text | `keymap::EDITOR_HELP` |
-
-### Device view
-
-Intents handled in `App::elek_intents` (`src/app/elek/commands.rs`); worker
-answers land in `App::elek_event` (`src/app/elek/events.rs`).
-
-| Control | Where |
-|---|---|
-| Mode header: Sample Editor / Device (Samples / Patterns / Presets / Pool / +Drive; the Sample Editor title becomes an accent **▶ PLAYING** button while a sample plays, `ElekState::playing` set in `App::logic`), **⇥ Dock beside files** (accent-filled, Samples page only), **Hide file panes** | `mode_header`, `device_pages` in `src/ui/elek_view/chrome.rs` |
-| Device bar: **⬇ Load current project**, **⬆ Push to device**, **💾 File** menu (Save / Load project…), **+Drive projects** menu, progress line | `device_bar`, `file_menu`, `projects_menu`, `status_line` in `src/ui/elek_view/chrome.rs` |
-| Samples page tools: **🔊 Preview on click**, **⬇ Fetch all for preview**, Cache menu, Undo / Reset, **⚡ Live** | `preview_tools`, `order_tools` in `src/ui/elek_view/chrome.rs` |
-| Live mode (push each pool edit after a pause; needs the whole project read, every pattern renumbered) | `App::live_push_tick`, `App::elek_push` in `src/app/elek/commands.rs`; gate `ElekState::pool_pushable` in `src/ui/elek_view/state.rs` |
-| Project-load completion and push read-back verification | `App::elek_event` in `src/app/elek/events.rs` delegates `Loaded` to `App::elek_loaded` in `src/app/elek/readback.rs`; `App::check_elek_readback` there coordinates `log_pool_read`, `check_pattern_readback`, `sample_readback_status`, `sound_readback_status`, `stopped_read_status`. Pattern diagnostics are gathered first; displayed status follows sample pool, sound pool, patterns, then incomplete-read warnings |
-| Read-back after a push skips empty patterns (no note trigs, kit samples or not: `PatternInfo::silent`) that the push leaves as read are handed to the read from memory, not asked for again (manual Load / Reload and the first read stay complete). **Save debug dump** leaves empty patterns out | `ElekProject::untouched_blanks`, `blank_patterns`; `ElekState::keep_blank` set in `App::elek_push`, passed by `App::elek_read` as `ElekCmd::Read::cached`; `save_dump` in `src/device/elek/dump.rs` |
-| Samples page: two bank panes, slot rows, slot right-click menu (Play / Open local copy, Show original in source pane, Rename on +Drive…, Insert empty slot / Insert N above selection, Clear all unused) | `slot_pane`, `slot_row`, `SlotRowInfo`, `slot_file_drop` in `src/ui/elek_view/slots.rs`; `slot_menu`, `slot_tooltip` in `slot_menu.rs`; pool edits (`insert_empty`) in `editing.rs`; original lookup `Links::original`, handled in `src/app/elek/commands.rs` under `ElekIntent::ShowOriginal`; `rename_dialog` in `elek_view/dialogs.rs`, run under `ElekIntent::RenameFile`, name updated in `App::absorb` (`pool_rename`) |
-| Cross-pointing while the pool is shown: a local file under a pane's cursor flashes its slot; a slot under the pool cursor flashes its local file in the source pane (else the folder leading to it, else ".."). Nothing gets selected | `App::cross_ping`, `App::pool_shown` in `src/app/elek.rs`; `ElekState::ping_key`, `cursor_key`; `DirTab::ping`; drawn by `paint_ping` in `src/ui/file_table/effects.rs`; match test `Link::is` |
-| Edited since upload: pool samples whose local file changed are drawn amber (slot name and file row, `theme::CHANGED`), rechecked every 2 s; slot menu **⬆ Update on device from edited file** / **Update all N edited** uploads it beside the +Drive original (kept), fills the same slot, pushes once all land | `App::check_changed`, `App::update_changed`, `App::update_landed` in `src/app/elek/samples.rs`; `Links::changed_copy`; `ElekState::changed_local`, `ElekIntent::UpdateChanged`; file rows via `TableCtx::changed` |
-| Sample memory bar under the slot panes (fill vs 64 MB / 400 MB, change since read) | `memory_bar` in `src/ui/elek_view/chrome.rs`; capacity `Model::sample_memory` in `src/device/elek.rs` |
-| Drag slots out onto a local file pane: download their +Drive files there; if some already have a local copy (not the preview cache), ask: download anyway / only missing / show the local file in that pane. With several slots, then ask whether to prefix names with slot numbers (`060_kick.wav`) | `ElekState::dragged_slots`; caught by pointer in `App::show_pane`, then `App::slots_dropped`, `App::answer_slot_download`, `App::download_slots`, `App::answer_slot_prefix`, `slot_prefixed` in `src/app/pane_view.rs`; dialogs `dialogs::slot_download`, `dialogs::slot_prefix`; the new names ride on `Task::Transfer::local_names` to `download` in `src/device/transfer.rs`; lookup `Links::user_copy` |
-| Cut / copy / paste of slots: ⌘X then ⌘V fills the empty slots from the cursor down, ⇧⌘V inserts at the cursor and shifts the rest down (into the next empty slots); cut slots are left empty, drawn faded. Copied or cut slots pasted into a local file pane download like a slot drag; local files copied in a pane and pasted into the pool fill empty slots like a file drop. One clipboard: setting either drops the other | `ElekState::set_clip`, `paste`, `paste_files`, `clip_keys` in `src/ui/elek_view/editing.rs`; sample `PoolClip` type in `elek_view.rs`; keys in `src/ui/elek_view/keys.rs`; app side `ElekIntent::Clipped` / `PasteFiles` in `App::elek_intents` (`src/app/elek/commands.rs`), `App::paste` and `App::set_clipboard` in `src/app/actions.rs`; pane button label `TableCtx::slot_clip` |
-| Push / clear / close / stale-project confirmations | `confirm_push`, `confirm_clear`, `confirm_close`, `confirm_stale` in `src/ui/elek_view/dialogs.rs` |
-| Patterns page tools: Hide empty (also hides tracks without note trigs and their SOUNDS rows), Bytes, Open all / Fold all banks | `view_tools` in `src/ui/elek_project_view/controls.rs` |
-| Patterns page: Pack bank, Rename all, pattern list, step dots, row menu (Copy pattern, Save / Load pattern…). Pattern hover highlighting, selection, dragging and its menu are on the header line only (`hresp`); folded-out tracks and SOUNDS lines keep their own interactions and copy menus | `action_bar` in `src/ui/elek_project_view/controls.rs`; `list`, `ListActions` in `list.rs`; `bank_header`, `track_row` / `TrackRow`, `pattern_menu` / `PatternMenu` in `rows.rs`; `dots`, `mini` in `steps.rs`; `ProjEd` in `state.rs` |
-| Patterns page **SOUNDS** foldout under a folded-out pattern's tracks: each kit track's sound decoded like the Pool page (machine, SRC page, defaults hidden unless the Pool page's **Show defaults** is on), the pool sound with the same name and sample (POOL), values differing from it amber. Click a sound line to select it; **⌘C / ⌘V** or right-click → **Copy sound / Paste** uses the same single-sound clipboard as Pool and Presets, including pasting onto a different track number. `SoundFold::{copy, paste}` queues actions; `finish_sound_actions` in `clipboard.rs` validates and applies them, retaining staged tags and leaving trigs / p-locks alone. Copies also put a status text on the system clipboard, since ⌘V only reaches egui when it holds text | `sound_foldout`, `SoundFold` in `src/ui/elek_project_view/sounds.rs`; `ProjEd::snd_open` in `state.rs`; decoded at parse into `TrackInfo::sound` (`make_info` → `library::parse_sound`); shared helpers `param_at`, `is_default`, `machine_text`, `src_detail` in `src/ui/elek_library_view.rs` |
-| Track copy / paste: click track names in folded-out rows to select; right-click **Copy ▸** track (⌘C) / track sound / track events and **Paste ▸** the same three (greyed until copied; ⌘V pastes whatever is copied) into other patterns (same track numbers), confirm when trigs would be lost. Full-track and multi-track copies retain separate events / sound clips; copying events alone drops the copied sound. Copying one audio track sound uses the shared Pool / Presets clipboard and targets the selected destination track(s) | `Part`, `TrackClip`, `copy_tracks`, `paste_tracks`, `apply_tracks`, `copy_items`, `paste_items`, `confirm_tracks` in `src/ui/elek_project_view/clipboard.rs`; `ProjEd::click_track` in `state.rs`; stored as `Cell::tracks` (events) and `Cell::sounds`, spliced at push by `Patterns::splice_track` (events: seq track, p-lock rows; sound: kit sound, DT2 MIDI bit) in `src/device/elek/patterns.rs` |
-| Presets page (between Patterns and Pool): two independent bank panes, bank strips, name/tag filter, Hide empty, **Reload presets**, **Push to device**, loading / push progress, Undo / Reset. Click / Shift / Command selection; drag groups within or between banks to place / swap, Alt / Ctrl drop above or below to insert and shift, bank-tab drag navigation, Alt-arrow nudge, keyboard selection and grouped Undo. Row menu clears the selection, inserts empty slots or closes gaps within the bank. Shared selection / permutation / drop feedback lives in `src/ui/slot_list.rs` (also used by Samples); preset `edit` / `apply_pending` loads affected banks and translates permutations into native operations. Pending edits are amber and stay local until Push unless Live is on. Reload asks before discarding edits; same-device reconnect keeps them. A manual push checks all touched slots for device changes, uses native +Drive preset operations and scoped preset uploads, then verifies sound bytes and empties; a verified push updates the cached listings / sounds / tags from the edits (`PresetView::commit_edits`) instead of reading again. Touched presets are read for those checks only while Live is off (`request_push_data`); repeated writes to one slot are sent once (`compact`). Failed / partial pushes require reload. Preset lists use the full pane height, with no details panel below them. Right-aligned tag badges use the same popup editor and tag clipboard as Pool / Patterns (`sound_tags::show_with_open`). Opening a tag field loads its complete preset snapshot before edits become available; `PresetView::edit_tags` stages `PresetOp::Write` with only the bitmap changed (`Preset::set_tags`), using preset Undo / Push. Row tags decode the sound-header mask (`presets::tag_names`, `Preset::tag_mask`); `PresetView::request_tags` reads visible rows first, then the displayed banks, one background `ReadPresetTags` at a time without blocking Reload / Push; each keeps the whole preset (`tags_read`, `Conn::preset_tags`) without the sample-path lookup (`PresetView::unresolved`), so edits need no second read and a copy re-reads it in full (`resolve_for_copy`). Tags follow the staged sound source; hover shows the complete list. Copy / paste sounds between presets, the sound pool and unfolded pattern SOUNDS rows. Preset-to-preset editing is independent of a project. A small padlock after the name marks presets locked (write-protected) on the device: the listing's u16 operations word (`PresetEntry::ops`) lacks bits that other listed presets carry (`PresetEntry::locked`, union in `PresetView::full_ops`, drawn by `padlock`); a failed push names the locked slots it touched, and the device-side refusals mention locking | `src/ui/elek_presets_view.rs` (`PresetView`, `stage`, `plan`, `pane`, `bank_strip`); `src/device/elek/presets.rs` (`PresetOp`, `PresetPush`, `Conn::push_presets`, `allowed_edit`, `preset_banks`, `preset_entries`, `read_preset`, `preset_data`, `decode_sound`); `ElekCmd::{ListPresetBanks, ListPresets, ReadPreset, PushPresets}`, matching `ElekEv` in `App::elek_event` |
-| Presets **⚡ Live**: queues edits after 400 ms (held while any popup, e.g. the tag editor, is open), keeps editing available during writes, moves cached listings/sounds/tags with the edits (`commit_edits`) before accepting the next batch and keeps selection after saves. Reads no presets for moves / swaps / clears: skips device-change checks and read-back (`plan(false)`); manual Push still verifies. Switching Live on with staged edits opens the push confirmation first; Live starts once that checked push succeeds (`live_after_push`). Only one live batch is sent at a time; failures stop the queue until reload. Undo / Reset affect unsent edits only; reconnect turns Live off. Row **Rename…** uses the same staged writes as tags. | `PresetView::{live_tick, commit_edits, pushed, edit_locked}` and rename modal in `src/ui/elek_presets_view.rs`; tick in `App::logic`; `PresetPush::verify`, `Preset::set_name` and `Conn::push_presets` in `src/device/elek/presets.rs` |
-| Pool page (tab after Presets, `ElekPage::Library`): the **sound pool** only, drawn in the pixel font on the OLED background (row metrics `ROW_H`, `F_*`, column widths `*_W` at the top of the file). Editable with the whole project read (`sounds_locked`): drag a sound by its number/name onto another to swap (onto an empty one to move), click a row to highlight it (`LibraryView::selected`), click the highlighted name to rename it in its row (`LibraryView::renaming`), right-click Rename… / Delete / **Paste track sound** (the Patterns page's copied track sound, `ProjEd::copied_sounds`, into this sound or over it, more than one fill the next empty ones below; also ⌘V on a highlighted empty sound; `paste_track_sounds`, cell `SoundSrc::Track`, bytes from `ElekProject::track_sound_for_pool` via `Patterns::track_sound`, refused for MIDI tracks, empty sounds, or a sound version unlike the pool's; replaced sound's locks stay on it, `lock_map`). Right-click **Copy** / ⌘C on a highlighted sound copies a pool sound (`PoolClip` in `ProjEd::pool_clip`, `copy_pool_sound`; one clipboard with the copied tracks and patterns, `ProjEd::set_pool_clip`): pasted into another pool sound it duplicates it (locks stay with the original, `lock_map`); pasted onto kit tracks on the Patterns page (selected tracks: ⌘V or Paste here ▸; a SOUNDS line: right-click → Paste) it is stored as `Cell::pool` and written over the kit sound at push (`Patterns::put_track_sound` in `ElekProject::new_data_parts`, MIDI bit cleared; checked by `ElekProject::pool_sound_for_track`). Pool sounds are taken from the payloads before patterns are placed (`new_data_parts`' first half) (tried while locked, e.g. patterns still loading: a warning by the pointer and in the tool row, `LibraryView::blocked`, `blocked_tip`); edits in `LibraryView::sounds` (`SoundCell`, `SoundSrc`), undo / reset; pushed with **⬆ Push to device** by `ElekProject::build_push` → `sound_writes` (one `0x53` each, emptied ones as `blank_sound`), sound locks renumbered in every pattern (`sound_moves`, `move_locks`, `lock_spots`), checked after read-back (`ElekState::expect_sounds`); read by itself once per project when shown with the device plugged in, `LibraryView::auto_read`; each sound's sample, SRC page values (`PoolSound::src`, offsets `src_offsets` in `library.rs`, named per machine: Machine column + SRC cells, from the machine byte (DT1 sound+124, DT II sound+210) and the tables in `src/device/elek/machines.rs`, `PoolSound::params`) and the kit tracks with the same name and sample, `kit_uses`. SRC values at their defaults are left blank unless **Show defaults** is on (`is_default`, `LibraryView::show_defaults`). Clicking a sample pings its slot in the docked pool and plays it (`ElekIntent::Local`). | `src/ui/elek_library_view.rs` (`LibraryView`, `sound_pool`, `sound_rows`, `view_tools`); device side `src/device/elek/library.rs` (`Worker::read_sound_pool`, `Worker::read_sound_step`; DT1 pool from the whole dump only, its `0x63` answers are kit track sounds: `single_sounds`); `ElekCmd::ReadSounds`, `ElekEv::Sounds` / `SoundProgress` handled in `App::elek_intents` / `App::elek_event` |
-| Right column switch: FILES / SAMPLE POOL / +DRIVE (SAMPLE POOL and +DRIVE hidden while the device is unplugged or switched off; SAMPLE POOL only once the device view was entered with a device plugged in or a project is loaded, and not while the Samples page is in the centre). FILES and +DRIVE are the Destination pane on a local / device tab; the mode follows the active tab | `App::show_dest_col`, `show_files`, `show_drive`, `pool_in_col`, `pool_offered`, `drive_in_col` in `src/app/elek.rs`; widget `theme::column_switch` |
-| Right column width (snaps to 420 px the first time the pool shows, max 680 while it shows) | `DOCK_W`, `DOCK_MAX_W`, `pool_snapped` in `App::show_layout` (`src/app/layout.rs`) |
-| Device back after unplug / switch-off (or another unit on the cable): +Drive names dropped, project read again; asks first when unpushed edits are open (keep them, or drop and read); a project opened from a file is kept. A different unit by port name (`App::last_unit`, also caught on a One→One swap) drops the old project and its sound pool at once, edits included (`ElekState::close_project` → `LibraryView::forget`) | `App::device_reconnected`, `App::answer_reconnect` in `src/app/elek.rs` (called from `App::track_presence`); dialog `dialogs::device_reconnected` via `App::reconnect_ask` |
-| First device-view entry per run: reads the project by itself, then docks the pool once names are in (the page stays as it is) | `App::greet_device`, `App::first_dock_now` in `src/app/elek.rs` (fired from `App::elek_event` in `elek/events.rs`) |
-
-### Dialogs
-
-Shared modals are functions in `src/ui/dialogs.rs` (conflicts, trash, duplicates,
-device load, rename local copy, slot download, leave editor, save scope, name export, name kit, send back). Each
-is opened by a pending field on `App`. `App::ui` calls `show_pending_dialogs`
-in `src/app/pending_dialogs.rs` after `show_layout` (`src/app/layout.rs`)
-and `cross_ping`. The dispatcher keeps
-the same-frame answer order: `show_transfer_dialogs`, `show_device_dialogs`,
-`show_file_removal_dialogs`, `show_kit_name_dialog`, `show_leave_dialog`,
-`show_save_dialogs`, then `finish_pending_close`.
-
-### Sound tags (Patterns, Pool and Presets)
-
-- Tiny uppercase, gray tag-shaped badges without dots, with vertically centered
-  glyphs, right-aligned in their field and the drawing shifted up 1 px.
-  Shown on the Pool page, Patterns → SOUNDS
-  foldouts and Presets; click a badge or **+ TAGS** to toggle any
-  of the 32 flags. Right-click the tag field or use its popup for **Copy tags** /
-  **Paste tags** (replaces the bitmap, also across pages). Hover lists full names;
-  overflowing badges end in an ellipsis. UI and independent tag clipboard:
-  `src/ui/sound_tags.rs`; names / device bit order: `presets::TAG_NAMES`.
-- `PoolSound::tags` decodes sound-header bytes 8–11 (big endian).
-  `SoundCell::tags` stages pool flags; `Cell::tags` stages kit-track flags.
-  Both use the existing undo and project push / edited-file export paths.
-  Presets stage `PresetOp::Write` snapshots via `PresetView::edit_tags`.
-  Track writes change only those four bytes (`Patterns::put_track_tags`),
-  preserving the MIDI bit and all sound parameters. Sound copies retain edits.
-
-### Sound clipboard between Pool, Presets and Patterns
-
-- `PoolClip` / `ProjEd::set_pool_clip` in `src/ui/elek_project_view/clipboard.rs` is shared
-  by Pool, Patterns and Presets. `elek_presets_view::{copy_preset, finish_copy,
-  paste_sound}` handles preset copies (including asynchronous reads) and staged
-  pastes. `App::logic` completes a preset copy even after switching pages.
-- `SoundSrc::Preset` carries a sound snapshot. `prepare_sound_paste` in
-  `src/ui/elek_library_view.rs`, shared by pool and track pastes, validates the model/version and resolves the embedded
-  sample ID, and stages a sample absent from the project in an empty sample
-  slot only after a **Cancel / Commit** dialog names the sample and paste destination.
-  `LibraryView::pending_sample`, `ask_sample_paste` and `confirm_sample_paste`
-  retain the original clipboard/destination; Commit revalidates the paste, and Cancel
-  leaves both sound and sample pool unchanged. The dialog runs from `elek_view::finish`
-  on every device page and is cleared when the project changes. Existing project
-  samples need no confirmation. A sample missing from +Drive refuses the paste without editing anything.
-  Copy/paste feedback appears in the bottom status bar (`App::status_bar`),
-  without adding clipboard hints or paste banners above the sound rows.
-  Sound-pool paste feedback is also logged. Supported older presets are sent as
-  independent versioned sound dumps for the firmware to upgrade; kit track
-  pastes still require matching sound layouts. Direct preset-to-track pastes resolve
-  samples without a detour through Pool; incompatible track pastes show their
-  reason on the disabled menu item. `request_sound_paste` queues track writes
-  for `finish_sound_actions`, which stages samples only after the track edit succeeds.
-  `ElekProject::cell_sound` resolves that sample again against the pool at push,
-  so sample reordering is honored. Sample additions have their own Samples undo.
-- `PresetOp::Write`, `ElekProject::export_preset`, `Conn::{preset_template,
-  write_preset, push_presets}` in `src/device/elek/presets.rs` export pool sounds
-  and upload validated uncompressed preset containers, checking destinations
-  before writing and all resulting bytes after for manual pushes; Live skips these reads. `allowed_write` and
-  `Conn::preset_writer` restrict uploads to exact preset paths and their own job.
-  Unknown container layouts are refused. An existing same-version preset on the
-  device provides the format/firmware header for exports.
-
-## Styling
-
-| What | Where |
-|---|---|
-| Global look: greys, accent, corner radius, spacing | `theme::apply` in `src/ui/theme.rs` |
-| Accent colours | `ACCENT`, `ACCENT_BRIGHT`, `ON_ACCENT`; device yellow `DEVICE_ACCENT*` |
-| Anything device-related: wash, frame, dimming when unplugged, icon | `device_wash`, `device_frame`, `device_dimmed`, `device_group`, `DEVICE_ICON` in `theme.rs` |
-| Refused drop / invalid action: red frame `deny_frame()` (colour `DENY`), note by the pointer while dragging `pointer_note` (tooltips don't show mid-drag) | `theme.rs`; used by pool file drops in `slot_file_drop` in `src/ui/elek_view/slots.rs` (duplicates via `ElekState::slot_of_local`) and `blocked_tip` in `elek_library_view.rs` |
-| Device-screen look (pixel font, OLED colours) | `oled_font`, `OLED*`, `install_fonts` in `theme.rs`; font is `assets/frucade.ttf` |
-| Shared widgets: pane titles, tabs, section headers, × buttons, show toggles | `pane_title`, `mode_title`, `pane_tab`, `device_tab`, `section_header`, `close_button`, `vis_toggle`, `soft_toggle` (quiet on/off setting), `progress_bar` (square corners, use for every bar) in `theme.rs` |
-| Quiet bank identity colours and edge badges (2 px vertical, 1 px horizontal) | `IDENTITY_START`, `IDENTITY_END`, `identity_color`, `child_identity_color` (50% parent / 50% own list position), `color_badge`, `BadgeEdge` in `theme.rs`; sample bank tabs in `elek_view/slots.rs` (`slot_pane`); pattern bank/track labels in `elek_project_view/rows.rs`, pattern headers in `list.rs`, sound rows in `sounds.rs` |
-| Editor colours (in/out, playhead, clip, limit, mono, marker) and sizes | consts at the top of `src/ui/editor_view/mod.rs` |
-| File row height, device row text | `ROW_HEIGHT` in `src/ui/file_table.rs`; `OLED_TEXT` in `src/ui/file_table/cells.rs` |
-| Pattern list colours and metrics | consts at the top of `src/ui/elek_project_view.rs` |
-| Window size, title, icon | `src/main.rs` |
-
-Other one-off colours are local consts in the view that uses them.
+- `src/app/*`: the `App` struct (`mod.rs`), split by topic across files.
+  `logic()` absorbs worker results every frame, even when hidden; `ui()` draws.
+- `src/ui/*`: drawing and mouse handling only. **Views take state and return
+  intents** (`Intent` file table, `EdIntent` editor, `ElekIntent` device view).
+  The `App` method that drew the view handles them, so a button's label is in
+  `src/ui/…` and its effect is in `src/app/…`. Main handlers: `App::show_pane`
+  (file panes), `App::show_editor` (`app/editing.rs`), `App::elek_intents`
+  (`app/elek/commands.rs`).
+- `src/editor/*`, `src/audio/*`: editor model and DSP. No egui in `audio`.
+- `src/device/*`: one worker thread owns the MIDI link.
+- **`ui()` never does I/O.** Post a request, draw from cached state.
+- **Everything a worker produces comes back as a `jobs::Ev`**, handled in
+  `App::absorb` (`app/transfers.rs`); device-project answers go on to
+  `App::elek_event` (`app/elek/events.rs`).
+- **Modals are pending fields on `App`**, opened by setting the field and shown
+  by `show_pending_dialogs` (`app/pending_dialogs.rs`) after layout. Its call
+  order is the same-frame answer order; keep it when adding one.
 
 ## Jobs and queues
 
-There are two mechanisms, and only the device one is a real queue.
-
-| What | Where |
-|---|---|
-| Worker-to-UI events (`Ev`), job ids, cancel flags | `src/jobs.rs` (`Ev`, `Jobs::register`, `Emitter`) |
-| Local work: one detached thread per request (list, dir size, copy/move, trash, duplicates, mono copy) | `Jobs::spawn` and `execute` in `src/jobs.rs` |
-| **Device queue**: one thread; writes keep their order, read-only browser requests run between project / transfer steps (`Cmd::{List, Job, Elek}`) | `Device`, `Task`, `Dir`, `Cmd` in `src/device/mod.rs` |
-| Queue loop, parked jobs (`later`), counting ahead | `Worker::run`, `Worker::job`, `Worker::count_parked` in `src/device/worker.rs` |
-| What may jump the queue (folder listings, preset banks / listings / details, project listings, sample-path resolution; mkdir and non-overlapping rename) | `jumps_queue`, `serve_lists`, `involved` in `src/device/worker.rs` |
-| Renaming a folder that queued or running jobs use: runs at once (or, if the running job is in it, at that job's next file / item boundary: `Worker::held`, `apply_held`); waiting jobs are rewritten to the new path (`redirect_queue`) and the running job maps its remaining paths through `Worker::redirects` (`here`) | `Worker::renamed`, `apply_held`, `here` in `src/device/worker.rs`; called at the top of `Worker::upload` and per item in `Worker::job` |
-| Retries, timeouts, chunk size | consts in `src/device/mod.rs`; boot-time handshake timeout / retry interval in `src/device/conn.rs`; `proto::CHUNK` |
-| Starting a device job from the UI | `App::run_device` in `src/app/transfers.rs` |
-| Planning and conflicts before anything runs | `ops::plan` in `src/ops.rs`; `App::offer`, `App::launch`, `App::launch_merge`; `PlanKind` in `src/app/mod.rs` |
-| Results landing in the UI (progress, finished, relist) | `App::absorb` in `src/app/transfers.rs` |
-| Project reads and pushes | `ElekCmd` through the same queue; `Worker::elek`, `read_pattern_step`, `read_project_browsing` in `src/device/elek.rs`; page priority updated every frame by `App::prioritize_elek_read` (`src/app/elek/commands.rs`) / `ReadCtl::prioritize`; `Conn::dump_pending` keeps whole-dump packets while API browser reads run |
-| Preview fetches going ahead of other work | `App::pump_fetch` in `src/app/elek/samples.rs` |
-
-## Device internals
-
-| Topic | Where |
-|---|---|
-| SysEx wire format, command codes, 7-bit coding | `src/device/proto.rs` |
-| Finding the port, handshake, product ids | `src/device/conn.rs` (`elektron_port`, `product`, `Conn::open`) |
-| Plugged in or not (port scan) | `src/device/presence.rs`; reaction in `App::track_presence` |
-| Background project read when the device is first seen this run (startup, or first plug-in before the device view was opened); the pool docks on first entry to the device view | `App::preload_elek`, `App::greet_device` in `src/app/elek.rs`; flag `App::elek_preloaded`; called from `App::track_presence` (Unknown → One) and `App::device_reconnected` |
-| Device sample format and WAV conversion | `src/device/sample.rs` |
-| Upload / download / copy / move / delete, `/trash` | `src/device/transfer.rs`; `device::TRASH` |
-| Project dump: models, struct sizes per version, slot references, usage counts | `src/device/elek.rs` (`Model`, `Scan`, `SlotRef`, `ElekProject`) |
-| Pattern parsing and editing | `src/device/elek/patterns.rs` |
-| Presets **💾 Save** foldout (importable JSON / debug), **Load presets…**: JSON stores raw containers as base64, original bank / slot locations and empty slots. Load validates format/model/locations/checksums, reads current device presets and stages only differing writes/clears as one undo group; requires existing edits to be pushed/reset. Banks absent from the backup are untouched; Push performs the device writes and verification. New debug dumps include `presets.json` too | `src/device/elek/preset_file.rs` (`PresetFile`, `LoadedPresets`, `Worker::{save_preset_file, load_preset_file}`); `Preset::from_container` in `src/device/elek/presets.rs`; `PresetView::{can_load_file, load_file}` and `show` in `src/ui/elek_presets_view.rs`; `ElekIntent` / `ElekCmd::{SavePresetFile, LoadPresetFile}`, `ElekEv::{PresetFileSaved, PresetFileLoaded}`, handled in `App::elek_intents` / `App::elek_event` |
-| Project / pattern JSON files and bundles | `src/device/elek/file.rs`; app side `App::save_elek_file`, `App::start_import` in `src/app/elek/files.rs` |
-| Raw dumps for format research: project **File → Save debug dump** includes project pool / track sounds, excludes saved +Drive presets. Presets **Save preset debug dump** reads all saved banks into `~/Documents/KitPool/preset_dumps`: raw Data API containers, supported decoded sounds, bank / slot names, offsets / versions, printable strings; retains unsupported containers and marks partial exports. Worker serves browser reads between presets; separate progress and completion events | `src/device/elek/dump.rs` (`ElekProject::save_dump`, `Worker::save_preset_dump`); `Conn::preset_data`, `decode_sound` in `src/device/elek/presets.rs`; `ElekIntent::SavePresetDump`, `ElekCmd::SavePresetDump`, `ElekEv::{PresetDumpProgress, PresetsDumped}`; button / progress in `src/ui/elek_presets_view.rs`, handling in `App::elek_intents` / `App::elek_event` |
-
-## Other topics
-
-| Topic | Where |
-|---|---|
-| Keyboard shortcuts: browser | `src/keymap.rs` (`Action`, `Keymap::macos` / `windows`); dispatch `App::handle_keys`, `App::perform` in `src/app/actions.rs` |
-| Keyboard shortcuts: editor | `keymap::editor_actions`, `EdAction`; dispatch `App::perform_editor` in `src/app/editing.rs` |
-| Keyboard shortcuts: device view | `ElekState::keys` in `src/ui/elek_view/keys.rs`; patterns `keys` in `src/ui/elek_project_view/controls.rs` |
-| Playback engine, output device, live loop updates | `src/audio/engine.rs`; `App::start_play_from`, end of `App::logic` |
-| Loading a file into the editor, auditioning, auto-play (device previews stop editor audio immediately (including during fetch), then play once, ignoring Loop: `App::preview_device_sample`, `App::elek_local` (`src/app/elek/samples.rs`), `App::once_for` / `voice_once`) | `App::audition`, `App::follow_cursor`, `Editor::request` |
-| Editor state, prefs, session restore | `Editor`, `Prefs`, `Session` in `src/editor/mod.rs` |
-| Editor undo | `src/editor/history.rs` |
-| File-operation undo (⌘Z in a pane) | `src/app/undo.rs` |
-| Selection, in/out, snapping, normalize | `src/editor/selection.rs`; kit gain in `sel_gain.rs` |
-| Limiter above 0 dB | `src/audio/limit.rs` |
-| Slice markers in WAV files | `src/audio/cues.rs` |
-| Waveform peak pyramid | `src/audio/peaks.rs` |
-| Numbered slot-list selection and reordering (Samples / Presets) | `src/ui/slot_list.rs`: `click`, `place`, `insert`, `nudge`, `insert_empty`, `close_gap`, `drop_target`, `paint_drop`; each view owns undo and applies the resulting order to its data |
-| Drag and drop inside the app | `DragPayload` in `file_table.rs`, `App::drop_kind` in `pane_view.rs`, `src/ui/drag_drop.rs` |
-| Drag and drop with Finder / Explorer | `src/app/os_dnd.rs` |
-| Clipboard, new folder, rename | `src/app/actions.rs` (pool slots: see Device view) |
-| Tab listing, tree mode, filter, sort, selection | `src/tab.rs`, `src/fs_model.rs` |
-| Folder sizes | `src/sizes.rs` |
-| Audio fingerprints: editor's sample, kit and slice sources re-checked every 3 s on a thread (`Ev::Printed`); pool samples printed from unchanged downloads (preview cache) | `src/prints.rs` (`Prints`, `Ask::run`); `App::print_tick`, `App::prints_landed` in `src/app/prints.rs`; app data folder `paths::data_dir`; user-facing description in README "Files KitPool keeps" |
-| Every folder the app writes to (data, cache, log, `~/Documents/KitPool`, temp) and the eframe app id | `src/paths.rs` |
-| On-disk stores (`device_links.tsv`, `fingerprints.tsv`): version line, append, background rewrite, `.bad` / `.bak` copies, logging | `src/store.rs` |
-| What survives a restart | `src/state.rs` (`AppState`); restored by `App::new` and written by `App::snapshot` in `src/app/startup.rs` |
-| Log file (`KitPool.log`, rotates to `KitPool.old.log` past 1 MB; folder from `paths::log_file`) | `src/log.rs` |
-| "Copying factory samples is not allowed" popup (once per run of queued jobs) | detected in `Worker::read_raw` (`device::FACTORY_LOCKED`, `is_factory`); collapsed and raised in `Ev::Finished` in `src/app/transfers.rs`; dialog `dialogs::factory_locked` |
-| Build script options, bundling, Windows cross-build | `build.sh`, `build.rs` |
-
+- Local work: one detached thread per request (`Jobs::spawn` in `src/jobs.rs`).
+  Not a queue.
+- **Device queue**: one thread (`Worker::run`, `src/device/worker.rs`). Writes
+  keep their order; read-only browser requests may jump ahead between steps
+  (`jumps_queue`). Renaming a folder that queued jobs use rewrites their paths
+  (`redirect_queue`, `Worker::redirects`). Retries, timeouts and chunk size are
+  consts in `src/device/mod.rs`.
+- Project reads go through the same queue, re-prioritized every frame by the
+  page in view (`App::prioritize_elek_read`, `ReadFirst`). Patterns are read last
+  because they're slow.
 
 ## Vocabulary
 
-| When the user says | They mean | Start in |
+| User says | Means | Code name / start |
 |---|---|---|
-| **device**, **on device**, **the Digitakt**, **Elektron** | An Elektron sampler on USB MIDI (Digitakt, Digitakt II; also Analog Rytm, Model:Samples for file browsing). Never the audio output device unless they say "output" or "audio device". | `src/device/mod.rs` |
-| **+Drive**, **drive** (with a device in context) | The sampler's file storage, browsed over SysEx. Paths are plain absolute paths (`/samples/kicks`) in `PathBuf`s that never touch the local disk. A tab on it has `DirTab::device == true`. | `src/device/conn.rs`, `src/device/transfer.rs` |
-| **drives** (local) | Mounted volumes, the `💾 ⏷` menu in a pane header. | `fs_model::volumes`, `App::drives_menu` in `src/app/nav.rs` |
-| **Device view**, **Elek**, **device pages** | The view on the project loaded in the device's memory, in place of the editor. Four pages: **Samples** (code: `ElekPage::Order`, "Elek Sample Order"), **Patterns** (code: `ElekPage::Project`, "Elek Project Editor"), **Presets** (code: `ElekPage::Presets`, saved +Drive sounds) and **Pool** (code: `ElekPage::Library`). | `src/app/elek.rs`, `src/ui/elek_view.rs`, `src/ui/elek_project_view.rs` |
-| **pool**, **sample pool**, **slot**, **bank** (Samples page) | The project's sample slots (`PoolEntry`), 128 per bank. | `src/device/elek.rs`, `ElekState` in `src/ui/elek_view.rs` |
-| **docked pool** | The pool as a pane in the right column (SAMPLE POOL), beside the editor. | `App::dock_elek`, `App::show_dest_col` in `src/app/elek.rs`; `elek_view::show_docked` |
-| **pattern**, **bank** (Patterns page) | One of 128 patterns, 16 per bank A to H. | `src/device/elek/patterns.rs` |
-| **push**, **read / load project**, **read back** | Write edits into the device's memory / read the loaded project from it. Saved projects on the +Drive are never written (`proto::FORBIDDEN`). | `ElekCmd`, `ElekEv`, `Worker::elek`, `Conn::push_project` in `src/device/elek.rs`; answers in `App::elek_event` (`src/app/elek/events.rs`) |
-| **SliceKit** (code: kit, `is_kit`) | A second editor slot that collects slices (**K**). Called SliceKit in the UI so it isn't confused with the Digitakt's own "kit" (a pattern's sound set, `patterns.rs`), which keeps the word "kit" on the Patterns / Pool pages. | `src/app/kit.rs`, `src/editor/clip.rs`. a kit may also reference something else. uncertain.|
-| **grid kit** | A SliceKit laid out on 4 / 8 / 16 equal slots (only while the marker padlock is locked). | `src/editor/grid.rs` |
-| **trim**, **tails**, **fades** (kits) | Cutting each slice's tail below a threshold. | `src/editor/trim.rs`, `src/editor/fade.rs`; UI in `src/ui/editor_view/trim.rs`, `strip.rs` |
-| **source**, **destination**, **pane** | The left and right file columns (`Role::Source`, `Role::Dest`), each a `Pane` of `DirTab`s. | `src/pane.rs`, `src/tab.rs` |
-| **commit** | Enter: copy the source selection into the active destination tab (nothing selected does nothing); a single selected file open in the editor is written as heard. | `App::commit` in `src/app/transfers.rs` |
-| **export** | Write the editor's selection to the destination. | `App::export*` in `src/app/editing.rs`, `Editor::export_with`, `src/audio/export.rs` |
-| **update on device**, **pool edit** | A pool sample opened in the editor from its slot; ⌘S (**⬆ Save → slot**) uploads it next to the original, fill the same slot and push. | `src/app/pool_edit.rs` (`PoolEdit`, `update_on_device`, `pool_edit_filled`) |
-| **save to slot** | Save to ⏷ → the editor's sample put into the selected slot (a filled one is replaced after a question) or the first empty one; once it lands it becomes a pool edit of that slot. | `src/app/pool_edit.rs` (`SlotSave`, `save_to_slot`, `slot_save_upload`) |
-| **send back**, **Save to → New file next to …** | Upload an edited sample next to the device file it came from. | `App::begin_send_back`, `dialogs::send_back` |
-| **fingerprint**, **print**, **content hash DB** | Our own hash of a file's decoded 16-bit PCM (several keys per local file: as is, and as each kind of upload would hold it), and of device samples via a downloaded copy. One global store for all drives, `fingerprints.tsv` beside `device_links.tsv` in `paths::data_dir`. Elektron's +Drive hash couldn't be reproduced (no CRC/Adler/MD5/SHA/FNV variant matches). | `src/prints.rs`; kept fresh by `App::print_tick`, used by `App::pool_match` in `src/app/prints.rs` |
-| **link**, **local copy** | A device file known to match a local file by the +Drive's content hash. | `src/links.rs`, `Worker::note_link` |
-| **preview cache** | Fetched device samples kept by content for playback. | `links::pool_cache_dir` (under `paths::cache_dir`); `PoolFetch` in `src/app/elek.rs`, `App::fetch_all` in `src/app/elek/samples.rs` |
-| **preset**, **preset bank** | A saved sound on +Drive under `/soundbanks/<bank>/<slot>` (256 slots per bank), separate from the current project’s sound pool. Editable dual browser on **Presets**, with staged move / swap / clear and a separate +Drive push. | `src/ui/elek_presets_view.rs`, `src/device/elek/presets.rs` |
-| **sound pool** (not the sample pool) | The project's 128 pool sounds (`0x53`, `PoolSound`), shown on the Pool page (tab "Pool", formerly "Sounds"; code still `ElekPage::Library`). Saved presets in `/soundbanks` are separate, shown on the Presets page. The project read takes the sound pool in after the sample names and before the patterns, unless the page in view says otherwise (`ReadFirst`, refreshed by `App::prioritize_elek_read` while the read runs: Patterns page → patterns, names, sounds; Pool page → sounds, names, patterns; else names, sounds, patterns) (`Worker::read_sound_step`, one `0x63` each, whole dump if one never comes; patterns last since they're the slow part; the Pool page gets the sound pool as soon as it's in, `ElekEv::Sounds`), so pool pushes renumber the samples sounds play; a read stopped before then leaves `ElekProject::sounds_read` false and blocks pool pushes (`ElekState::pool_pushable`) | `src/device/elek/library.rs` |
-| **mono**, **fold** | `Fold::{Mix, Left, Right}`. | `src/audio/stats.rs`, `Editor::set_mono` |
-| **scalpel** / **map** / **nums** | Editor panels: code names `scope` / `overview` (`minimap`) / `positions`. | `src/ui/editor_view/` |
-| **intent** | What a view returns instead of acting: `Intent` (file table), `EdIntent` (editor), `ElekIntent` (device view). The `App` method that drew the view handles them. | see Architecture |
-Device connection failures: persistent warning and **Retry connection** in `App::show_layout` (`src/app/layout.rs`), called by `App::ui`; port-open / handshake guidance in `Conn::open_port`. `presence::connection_status` tracks worker-confirmed connection state for the DEVICE switch independently of port discovery.
+| **device**, Digitakt, Elektron | The Elektron sampler on USB MIDI. Never the audio output unless they say "output"/"audio device". | `src/device/` |
+| **+Drive**, drive (device context) | The sampler's file storage over SysEx. Plain absolute `PathBuf`s that never touch local disk; `DirTab::device == true`. | `device/conn.rs`, `transfer.rs` |
+| **drives** (local) | Mounted volumes, `💾 ⏷` menu. | `fs_model::volumes` |
+| **Device view**, Elek | Project in the device's memory, shown instead of the editor. | `app/elek.rs`, `ui/elek_view.rs` |
+| Samples page | Sample pool slots, 128 per bank. | `ElekPage::Order` |
+| Patterns page | 128 patterns, 16 per bank A–H. | `ElekPage::Project`, `device/elek/patterns.rs` |
+| Presets page | Saved sounds on +Drive, `/soundbanks/<bank>/<slot>`. Not part of the project. | `ElekPage::Presets` |
+| Pool page | The project's 128 **sound pool** sounds (not the sample pool). Formerly "Sounds". | `ElekPage::Library`, `ui/elek_library_view.rs` |
+| **docked pool** | Sample pool shown as the right column (SAMPLE POOL). | `App::dock_elek`, `show_dest_col` |
+| **push** / **read back** | Write edits into device memory / verify them by reading again. | `ElekCmd`, `Conn::push_project`, `app/elek/readback.rs` |
+| **SliceKit** | Editor slot collecting slices (K). Code says `kit`/`is_kit`; the Digitakt's own "kit" (a pattern's sound set) is a different thing. | `app/kit.rs`, `editor/clip.rs` |
+| **grid kit** | SliceKit on 4/8/16 equal slots; only while the marker padlock is locked. | `editor/grid.rs` |
+| **source** / **destination** | Left / right file columns. | `Role::Source`/`Dest`, `src/pane.rs` |
+| **commit** | Enter: copy source selection into active destination tab. | `App::commit` |
+| **export** | Write the editor's selection to the destination. | `src/audio/export.rs` |
+| **pool edit**, update on device | Pool sample opened from its slot; save uploads beside the original, fills the slot, pushes. | `app/pool_edit.rs` |
+| **link**, local copy | Device file matched to a local file by the +Drive's content hash. | `src/links.rs` |
+| **fingerprint**, print | Our own hash of decoded PCM (several keys per file). Elektron's +Drive hash could not be reproduced. | `src/prints.rs`, `App::pool_match` |
+| **preview cache** | Fetched device samples kept by content. | `links::pool_cache_dir` |
+| scalpel / map / nums | Editor panels. | `scope` / `overview` / `positions` |
+| mono, fold | `Fold::{Mix, Left, Right}` | `audio/stats.rs` |
+
+## Gotchas
+
+- **Saved projects on +Drive are never written** (`proto::FORBIDDEN`). Only
+  device memory is pushed. Preset uploads are limited to exact preset paths
+  (`allowed_write`).
+- **Device off ≠ unplugged.** The DEVICE switch closes ports and stops the
+  presence scan so a DAW can use the device (`Presence::Off`); unplugging folds
+  the same panels but keeps scanning. Reconnect may be a different unit
+  (`App::last_unit`), which drops the old project.
+- A read stopped before the sound pool arrives leaves `sounds_read` false and
+  **blocks pool pushes** (`ElekState::pool_pushable`), because pool pushes
+  renumber sound locks in every pattern.
+- DT1 answers `0x63` with kit track sounds, so its sound pool comes only from
+  the whole dump.
+- **One sound clipboard** across Pool, Patterns and Presets (`PoolClip`,
+  `ProjEd::set_pool_clip`); the slot clipboard and file clipboard displace each
+  other. Copies also put text on the system clipboard, because ⌘V only reaches
+  egui when the clipboard holds text.
+- A kit never saves over or renames a file its slices came from
+  (`Editor::path_is_source`).
+- Factory samples can't be copied; the device refuses, surfaced once per run of
+  queued jobs (`device::FACTORY_LOCKED`).
+- `Panels::default()` is the resting editor layout, but a first run starts on
+  `Panels::all_on()` and the intro (`app/intro.rs`, after the first sample
+  loads) switches off its way to the default. Change both together.
+- Tooltips don't show mid-drag; use `theme::pointer_note`.
+- Device status and copy/paste feedback goes to the bottom status bar, not to
+  banners above lists.
+
+## Styling
+
+Everything shared is in `src/ui/theme.rs`: palette, accent, device yellow and
+wash/frame/dimming, OLED font and colours, shared widgets (`pane_tab`,
+`soft_toggle`, `section_header`…). Use `theme::progress_bar` for every bar. View-
+specific colours and metrics are consts at the top of the view file.
+
+## Elsewhere
+
+User-facing behaviour: [README.md](README.md). Device format research:
+`project_discovery.md`, `project_management_discovery.md` (local, gitignored).
+Folders the app writes to: `src/paths.rs`. What survives restart: `src/state.rs`.

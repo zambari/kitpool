@@ -1,5 +1,5 @@
 [package]
-name = "sample_manager"
+name = "kitpool"
 version = "0.11.0"
 edition = "2024"
 license = "MIT"

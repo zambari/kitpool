@@ -2,7 +2,7 @@
 # Build KitPool.
 #
 # Usage:
-#   ./build.sh          release build  -> target/release/sample_manager
+#   ./build.sh          release build  -> target/release/kitpool
 #   ./build.sh run      release build, then launch the app
 #   ./build.sh bundle   universal (Intel + Apple Silicon) .app, zipped
 #                       -> target/bundle/KitPool.zip
@@ -26,7 +26,7 @@ case "$mode" in
   release)
     cargo build --release
     echo
-    echo "Built: $(pwd)/target/release/sample_manager"
+    echo "Built: $(pwd)/target/release/kitpool"
     ;;
   run)
     cargo run --release
@@ -46,9 +46,9 @@ case "$mode" in
     # Leave any Windows zip in $out alone.
     rm -rf "${app:?}" "${out:?}/${app_name:?}.zip"
     mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-    lipo -create -output "$app/Contents/MacOS/sample_manager" \
-      target/x86_64-apple-darwin/release/sample_manager \
-      target/aarch64-apple-darwin/release/sample_manager
+    lipo -create -output "$app/Contents/MacOS/kitpool" \
+      target/x86_64-apple-darwin/release/kitpool \
+      target/aarch64-apple-darwin/release/kitpool
     cp assets/icon.icns "$app/Contents/Resources/AppIcon.icns"
 
     cat > "$app/Contents/Info.plist" <<PLIST
@@ -58,8 +58,8 @@ case "$mode" in
 <dict>
   <key>CFBundleName</key><string>$app_name</string>
   <key>CFBundleDisplayName</key><string>$app_name</string>
-  <key>CFBundleIdentifier</key><string>com.zambari.sample-manager</string>
-  <key>CFBundleExecutable</key><string>sample_manager</string>
+  <key>CFBundleIdentifier</key><string>com.zambari.kitpool</string>
+  <key>CFBundleExecutable</key><string>kitpool</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleVersion</key><string>$version</string>
@@ -92,7 +92,7 @@ PLIST
     stage="$out/KitPool"
     rm -rf "$stage" "$out/KitPool Windows.zip"
     mkdir -p "$stage"
-    cp "target/$target/release/sample_manager.exe" "$stage/KitPool.exe"
+    cp "target/$target/release/kitpool.exe" "$stage/KitPool.exe"
     (cd "$out" && zip -qr "KitPool Windows.zip" "KitPool")
     rm -rf "$stage"
     echo
@@ -101,7 +101,7 @@ PLIST
   dev)
     cargo build
     echo
-    echo "Built: $(pwd)/target/debug/sample_manager"
+    echo "Built: $(pwd)/target/debug/kitpool"
     ;;
   test)
     cargo test

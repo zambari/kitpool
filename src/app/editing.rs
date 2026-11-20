@@ -345,6 +345,7 @@ impl App {
         match choice {
             LeaveChoice::Cancel => {
                 self.relaunch = false;
+                self.reset_state = false;
                 self.status = "Kept editing — the edits are still unsaved".to_owned();
             }
             LeaveChoice::Discard if matches!(leave, Leave::CloseKit) => {

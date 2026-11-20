@@ -457,7 +457,7 @@ Install Rust from <https://rustup.rs>, then:
 ./build.sh run
 ```
 
-`./build.sh` alone makes a release build at `target/release/sample_manager`.
+`./build.sh` alone makes a release build at `target/release/kitpool`.
 The script's header lists the other options (`bundle`, `windows`, `dev`,
 `test`, `clean`).
 
