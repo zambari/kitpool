@@ -8,6 +8,16 @@ project on the device without menu-diving on its screen.
 
 Get it from the [releases](https://github.com/zambari/kitpool/releases) section if you don't want to build it yourself; builds are available for macOS and Windows.
 
+**First launch on macOS:** the app isn't notarised by Apple, so macOS says
+*"KitPool" Not Opened*. Click **Done** (not Move to Bin), then open
+**System Settings → Privacy & Security**, scroll down to the message about
+KitPool and click **Open Anyway**. You only need to do this once per download.
+Or, from Terminal, after moving the app to Applications:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/KitPool.app
+```
+
 
 ![Sample editor with the standard panels: gain, tools, file row, waveform, numbers and scalpel close-up](docs/editor.png)
 
