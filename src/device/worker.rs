@@ -17,6 +17,12 @@ pub(super) struct Worker {
     pub(super) counting: bool,
     /// Device paths the running job reads or writes (see [`involved`]).
     pub(super) busy: Vec<PathBuf>,
+    /// Renames of folders the running job is using, held until it is
+    /// between files (see [`Worker::apply_held`]).
+    pub(super) held: VecDeque<Cmd>,
+    /// Renames applied while the running job ran: `(from, to)` in order.
+    /// The job maps its remaining device paths through them.
+    pub(super) redirects: Vec<(PathBuf, PathBuf)>,
     /// The running transfer so far: files done (written or found already
     /// there), files skipped as already there, and same-name files of
     /// another size left alone. Reported at the end of a merge.
@@ -49,25 +55,82 @@ pub(super) fn involved(task: &Task) -> Vec<PathBuf> {
 }
 
 /// Whether `task` can run between the current job's steps: one or two quick
-/// requests, like a listing, that don't touch anything the running job or a
-/// waiting one is working on. Lets a new folder be made and named while a
-/// transfer runs.
-pub(super) fn jumps_queue(task: &Task, busy: &[PathBuf], later: &VecDeque<Cmd>) -> bool {
+/// requests, like a listing, that don't touch anything the running job is
+/// working on. Lets a new folder be made and named while a transfer runs.
+/// A rename that touches waiting jobs still goes: they are redirected
+/// (see [`redirect_queue`]).
+pub(super) fn jumps_queue(task: &Task, busy: &[PathBuf]) -> bool {
     match task {
         Task::Mkdir { .. } => true,
-        Task::Rename { from, to } => {
-            let overlaps = |p: &PathBuf| {
-                [from, to]
-                    .iter()
-                    .any(|q| p.starts_with(q) || q.starts_with(p))
-            };
-            let queued = later.iter().flat_map(|c| match c {
-                Cmd::Job { task, .. } => involved(task),
-                _ => Vec::new(),
-            });
-            !busy.iter().cloned().chain(queued).any(|p| overlaps(&p))
-        }
+        Task::Rename { from, to } => !busy.iter().any(|p| {
+            [from, to]
+                .iter()
+                .any(|q| p.starts_with(q) || q.starts_with(p))
+        }),
         _ => false,
+    }
+}
+
+/// `p` with `from` (or anything under it) moved to `to`, if it is there.
+pub(super) fn moved(p: &Path, from: &Path, to: &Path) -> Option<PathBuf> {
+    p.strip_prefix(from).ok().map(|rest| {
+        if rest.as_os_str().is_empty() {
+            to.to_path_buf()
+        } else {
+            to.join(rest)
+        }
+    })
+}
+
+fn move_in(p: &mut PathBuf, from: &Path, to: &Path) {
+    if let Some(n) = moved(p, from, to) {
+        *p = n;
+    }
+}
+
+/// Point a waiting job's device paths at `to` where they were under `from`.
+fn redirect_task(task: &mut Task, from: &Path, to: &Path) {
+    match task {
+        Task::Transfer {
+            dir,
+            items,
+            local_names,
+            ..
+        } => {
+            for (src, dst) in items.iter_mut() {
+                if *dir != Dir::Upload {
+                    if let Some(n) = moved(src, from, to) {
+                        if let Some(name) = local_names.remove(src) {
+                            local_names.insert(n.clone(), name);
+                        }
+                        *src = n;
+                    }
+                }
+                if *dir != Dir::Download {
+                    move_in(dst, from, to);
+                }
+            }
+        }
+        Task::Rename { from: f, to: t } => {
+            move_in(f, from, to);
+            move_in(t, from, to);
+        }
+        Task::Mkdir { path } => move_in(path, from, to),
+        Task::Trash { paths } | Task::Delete { paths } => {
+            paths.iter_mut().for_each(|p| move_in(p, from, to))
+        }
+    }
+}
+
+/// After `from` was renamed to `to`: redirect every waiting job, so uploads
+/// queued for the old folder land in the renamed one.
+pub(super) fn redirect_queue(queues: &mut [&mut VecDeque<Cmd>], from: &Path, to: &Path) {
+    for q in queues.iter_mut() {
+        for c in q.iter_mut() {
+            if let Cmd::Job { task, .. } = c {
+                redirect_task(task, from, to);
+            }
+        }
     }
 }
 
@@ -79,6 +142,7 @@ pub(super) fn serve_lists(
     c: &mut Conn,
     rx: &Receiver<Cmd>,
     later: &mut VecDeque<Cmd>,
+    held: &mut VecDeque<Cmd>,
     busy: &[PathBuf],
     em: &Emitter,
 ) {
@@ -101,7 +165,7 @@ pub(super) fn serve_lists(
                 let result = cmd.read_browser(c, em);
                 em.send(Ev::Elek(result.unwrap_or_else(|e| cmd.browser_failed(e.to_string()))));
             }
-            Cmd::Job { job, task, .. } if jumps_queue(&task, busy, later) => {
+            Cmd::Job { job, task, .. } if jumps_queue(&task, busy) => {
                 em.send(
                     Prog {
                         id: job,
@@ -119,6 +183,9 @@ pub(super) fn serve_lists(
                     Task::Rename { from, to } => (rename_checked(c, from, to), to),
                     _ => unreachable!("jumps_queue only lets quick tasks through"),
                 };
+                if let (Ok(()), Task::Rename { from, to }) = (&res, &task) {
+                    redirect_queue(&mut [later, held], from, to);
+                }
                 let errors = res.err().map(|e| e.to_string()).into_iter().collect();
                 let parent = at.parent().unwrap_or(Path::new("/")).to_path_buf();
                 em.send(Ev::Finished {
@@ -129,6 +196,12 @@ pub(super) fn serve_lists(
                     cancelled: false,
                 });
             }
+            // Renames a folder the running job is using: done as soon as
+            // the job is between files, see [`Worker::apply_held`].
+            job @ Cmd::Job {
+                task: Task::Rename { .. },
+                ..
+            } => held.push_back(job),
             job => later.push_back(job),
         }
     }
@@ -208,13 +281,18 @@ impl Worker {
             match cmd {
                 Cmd::List { path, generation } => self.list_now(path, generation),
                 Cmd::Job { job, cancel, task } => {
+                    // Renames done before this job: its paths are already current.
+                    self.redirects.clear();
                     self.busy = involved(&task);
                     self.job(job, &cancel, task);
                     self.busy.clear();
+                    self.redirects.clear();
                 }
                 Cmd::Elek(cmd) => self.elek(cmd),
                 Cmd::Release => self.release(),
             }
+            // Renames held back while that ran go before the waiting jobs.
+            self.apply_held();
         }
     }
 
@@ -225,6 +303,73 @@ impl Worker {
             crate::log::line("device: ports closed (switched off)".to_owned());
         }
         self.em.send(Ev::DeviceStatus(Err("Switched off".into())));
+    }
+
+    /// Run the renames held back because they touch the running job's
+    /// folders. Call only between files: nothing is open on the device.
+    /// The running job then finds its remaining paths with [`Self::here`],
+    /// and waiting jobs are redirected.
+    pub(super) fn apply_held(&mut self) {
+        while let Some(cmd) = self.held.pop_front() {
+            let Cmd::Job {
+                job,
+                cancel,
+                task: Task::Rename { from, to },
+            } = cmd
+            else {
+                continue;
+            };
+            let parents: Vec<PathBuf> = [&from, &to]
+                .iter()
+                .map(|p| p.parent().unwrap_or(Path::new("/")).to_path_buf())
+                .collect();
+            if cancel.load(Ordering::Relaxed) {
+                self.em.send(Ev::Finished {
+                    job,
+                    touched: Vec::new(),
+                    device_touched: Vec::new(),
+                    errors: Vec::new(),
+                    cancelled: true,
+                });
+                continue;
+            }
+            let res = self.with_conn(|c| rename_checked(c, &from, &to));
+            if res.is_ok() {
+                self.renamed(from, to);
+            }
+            self.em.send(Ev::Finished {
+                job,
+                touched: Vec::new(),
+                device_touched: parents,
+                errors: res.err().into_iter().collect(),
+                cancelled: false,
+            });
+        }
+    }
+
+    /// `from` is now `to` on the device: the running job (see [`Self::here`])
+    /// and every waiting one carry on under the new name.
+    pub(super) fn renamed(&mut self, from: PathBuf, to: PathBuf) {
+        crate::log::line(format!(
+            "renamed {} -> {}; redirecting jobs that follow",
+            dev_str(&from),
+            dev_str(&to)
+        ));
+        for p in self.busy.iter_mut() {
+            move_in(p, &from, &to);
+        }
+        redirect_queue(&mut [&mut self.later, &mut self.held], &from, &to);
+        self.redirects.push((from, to));
+    }
+
+    /// Device path `p` of the running job, after the renames done since
+    /// it started.
+    pub(super) fn here(&self, p: &Path) -> PathBuf {
+        let mut p = p.to_path_buf();
+        for (from, to) in &self.redirects {
+            move_in(&mut p, from, to);
+        }
+        p
     }
 
     pub(super) fn list_now(&mut self, path: PathBuf, generation: u64) {
@@ -279,10 +424,20 @@ impl Worker {
                 Cmd::List { path, generation } => self.list_now(path, generation),
                 Cmd::Elek(cmd) if cmd.browsing() => self.elek(cmd),
                 // Quick enough to run between the current job's steps.
-                Cmd::Job { job, cancel, task } if jumps_queue(&task, &self.busy, &self.later)
-                    && jumps_queue(&task, &self.busy, &pending) => {
-                    self.job(job, &cancel, task)
+                Cmd::Job { job, cancel, task } if jumps_queue(&task, &self.busy) => {
+                    let n = self.redirects.len();
+                    self.job(job, &cancel, task);
+                    // A rename redirected the parked jobs; these too.
+                    if let Some((from, to)) = self.redirects.get(n).cloned() {
+                        redirect_queue(&mut [&mut pending], &from, &to);
+                    }
                 }
+                // Touches the running job's folders: held until it is
+                // between files.
+                job @ Cmd::Job {
+                    task: Task::Rename { .. },
+                    ..
+                } => self.held.push_back(job),
                 Cmd::Release => self.release(),
                 job => self.later.push_back(job),
             }
@@ -448,10 +603,11 @@ impl Worker {
         match task {
             Task::Rename { from, to } => {
                 let res = self.with_conn(|c| rename_checked(c, &from, &to));
-                if let Err(e) = res {
-                    errors.push(e);
-                }
                 touch(&mut touched_dev, to.parent().unwrap_or(Path::new("/")));
+                match res {
+                    Ok(()) => self.renamed(from, to),
+                    Err(e) => errors.push(e),
+                }
             }
             Task::Mkdir { path } => {
                 if let Err(e) = self.with_conn(|c| c.mkdir(&path)) {
@@ -569,10 +725,21 @@ impl Worker {
                 let counts = counts_for(self, &srcs, dir == Dir::Upload);
                 self.set_totals(&counts, scan_bytes);
                 let mut before = (0, 0);
-                for (i, (src, dst_dir)) in items.into_iter().enumerate() {
+                for (i, (src0, dst_dir)) in items.into_iter().enumerate() {
                     if cancel.load(Ordering::Relaxed) {
                         break;
                     }
+                    // Between items: a held rename can go now, and this
+                    // item follows it.
+                    self.apply_held();
+                    let dst_dir = match dir {
+                        Dir::Download => dst_dir,
+                        _ => self.here(&dst_dir),
+                    };
+                    let src = match dir {
+                        Dir::Upload => src0.clone(),
+                        _ => self.here(&src0),
+                    };
                     self.catch_up(&mut before, counts.get(i.wrapping_sub(1)), scan_bytes);
                     self.progress(
                         &src.file_name()
@@ -586,7 +753,7 @@ impl Worker {
                             self.upload(&src, &dst_dir, policy, mono, cancel, &mut errors)
                         }),
                         Dir::Download => {
-                            let name = local_names.get(&src).map(String::as_str);
+                            let name = local_names.get(&src0).map(String::as_str);
                             self.download(&src, &dst_dir, name, policy, cancel, &mut errors)
                         }
                         Dir::Copy => self.copy(&src, &dst_dir, policy, cancel, &mut errors),
@@ -624,6 +791,9 @@ impl Worker {
         if cancelled {
             errors.retain(|e| !e.ends_with("cancelled"));
         }
+        // Relist folders where they are now.
+        let mut touched_dev: Vec<PathBuf> = touched_dev.iter().map(|p| self.here(p)).collect();
+        touched_dev.dedup();
         self.em.send(Ev::Finished {
             job,
             touched: touched_local,

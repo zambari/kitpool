@@ -1694,10 +1694,11 @@ impl Worker {
         let em = self.em.clone();
         let rx = &self.rx;
         let later = &mut self.later;
+        let held = &mut self.held;
         let busy = &self.busy;
         let mut browse = |c: &mut Conn, i: usize, msg: &DumpMsg| {
             let more = on_msg(i, msg);
-            super::serve_lists(c, rx, later, busy, &em);
+            super::serve_lists(c, rx, later, held, busy, &em);
             more
         };
         let result = match self.conn.as_mut() {

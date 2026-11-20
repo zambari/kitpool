@@ -124,6 +124,8 @@ impl Device {
                     counted: HashMap::new(),
                     counting: false,
                     busy: Vec::new(),
+                    held: VecDeque::new(),
+                    redirects: Vec::new(),
                     merged: (0, 0, 0),
                 }
                 .run()

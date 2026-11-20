@@ -228,6 +228,10 @@ impl Worker {
         cancel: &AtomicBool,
         errors: &mut Vec<String>,
     ) -> Result<(), String> {
+        // Between files: run renames the user made of folders this upload
+        // is filling, and carry on in the renamed folder.
+        self.apply_held();
+        let dst_dir = &self.here(dst_dir);
         if src.is_dir() {
             let name = src
                 .file_name()
@@ -328,9 +332,10 @@ impl Worker {
         // `progress` borrows self, so track bytes locally while the
         // connection is borrowed and fold them back in after.
         let mut prog = self.job;
-        let (em, rx, later, busy) = (&self.em, &self.rx, &mut self.later, &self.busy);
+        let (em, rx, later, held, busy) =
+            (&self.em, &self.rx, &mut self.later, &mut self.held, &self.busy);
         let mut on = |c: &mut Conn, n: u64, file_total: u64| {
-            serve_lists(c, rx, later, busy, em);
+            serve_lists(c, rx, later, held, busy, em);
             if let Some(p) = prog.as_mut() {
                 p.done += match worth {
                     Some(w) => w * (sent + n) / len - w * sent / len,
@@ -424,9 +429,10 @@ impl Worker {
         // `progress` borrows self, so track bytes locally while the
         // connection is borrowed and fold them back in after.
         let mut prog = self.job;
-        let (em, rx, later, busy) = (&self.em, &self.rx, &mut self.later, &self.busy);
+        let (em, rx, later, held, busy) =
+            (&self.em, &self.rx, &mut self.later, &mut self.held, &self.busy);
         let mut on = |c: &mut Conn, n: u64, file_total: u64| {
-            serve_lists(c, rx, later, busy, em);
+            serve_lists(c, rx, later, held, busy, em);
             if let Some(p) = prog.as_mut() {
                 p.done += if half { n / 2 } else { n };
                 let file_done = p.file.filter(|f| f.0 == "reading").map_or(0, |f| f.1) + n;

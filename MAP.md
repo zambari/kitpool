@@ -226,6 +226,7 @@ There are two mechanisms, and only the device one is a real queue.
 | **Device queue**: one thread; writes keep their order, read-only browser requests run between project / transfer steps (`Cmd::{List, Job, Elek}`) | `Device`, `Task`, `Dir`, `Cmd` in `src/device/mod.rs` |
 | Queue loop, parked jobs (`later`), counting ahead | `Worker::run`, `Worker::job`, `Worker::count_parked` in `src/device/worker.rs` |
 | What may jump the queue (folder listings, preset banks / listings / details, project listings, sample-path resolution; mkdir and non-overlapping rename) | `jumps_queue`, `serve_lists`, `involved` in `src/device/worker.rs` |
+| Renaming a folder that queued or running jobs use: runs at once (or, if the running job is in it, at that job's next file / item boundary: `Worker::held`, `apply_held`); waiting jobs are rewritten to the new path (`redirect_queue`) and the running job maps its remaining paths through `Worker::redirects` (`here`) | `Worker::renamed`, `apply_held`, `here` in `src/device/worker.rs`; called at the top of `Worker::upload` and per item in `Worker::job` |
 | Retries, timeouts, chunk size | consts in `src/device/mod.rs`; boot-time handshake timeout / retry interval in `src/device/conn.rs`; `proto::CHUNK` |
 | Starting a device job from the UI | `App::run_device` in `src/app/transfers.rs` |
 | Planning and conflicts before anything runs | `ops::plan` in `src/ops.rs`; `App::offer`, `App::launch`, `App::launch_merge`; `PlanKind` in `src/app/mod.rs` |
