@@ -30,10 +30,11 @@ pub fn volumes() -> Vec<Volume> {
         for c in 'A'..='Z' {
             let path = PathBuf::from(format!("{c}:\\"));
             if path.is_dir() {
-                out.push(Volume {
-                    name: format!("{c}:"),
-                    path,
-                });
+                let name = match win_volume_label(&path) {
+                    Some(label) => format!("{label} ({c}:)"),
+                    None => format!("{c}:"),
+                };
+                out.push(Volume { name, path });
             }
         }
         return out;
@@ -89,6 +90,68 @@ pub fn volumes() -> Vec<Volume> {
         }
     }));
     out
+}
+
+/// What Explorer calls a drive: its volume label, or, for an unlabelled one,
+/// a name from its type ("Local Disk", "USB Drive", ...). `root` is `X:\`.
+#[cfg(target_os = "windows")]
+fn win_volume_label(root: &Path) -> Option<String> {
+    use std::os::windows::ffi::OsStrExt;
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetVolumeInformationW(
+            root: *const u16,
+            name: *mut u16,
+            name_len: u32,
+            serial: *mut u32,
+            max_component: *mut u32,
+            flags: *mut u32,
+            fs_name: *mut u16,
+            fs_name_len: u32,
+        ) -> i32;
+        fn GetDriveTypeW(root: *const u16) -> u32;
+    }
+
+    let wide: Vec<u16> = root.as_os_str().encode_wide().chain([0]).collect();
+    let mut buf = [0u16; 261];
+    // SAFETY: `wide` is NUL-terminated, `buf` is as long as we say, and
+    // null out-pointers are allowed for the fields we skip.
+    let ok = unsafe {
+        GetVolumeInformationW(
+            wide.as_ptr(),
+            buf.as_mut_ptr(),
+            buf.len() as u32,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if ok != 0 {
+        let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+        let label = String::from_utf16_lossy(&buf[..len]);
+        let label = label.trim();
+        if !label.is_empty() {
+            return Some(label.to_owned());
+        }
+    }
+    // SAFETY: as above.
+    let kind = match unsafe { GetDriveTypeW(wide.as_ptr()) } {
+        2 => "USB Drive",
+        3 => "Local Disk",
+        4 => "Network Drive",
+        5 => "CD Drive",
+        6 => "RAM Disk",
+        _ => return None,
+    };
+    Some(kind.to_owned())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn win_volume_label(_root: &Path) -> Option<String> {
+    None
 }
 
 #[derive(Clone, Debug)]

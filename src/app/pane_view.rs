@@ -56,8 +56,8 @@ impl App {
             if on_dev {
                 self.device_badge(ui);
             } else {
-                self.favourites_menu(ui, role);
                 self.drives_menu(ui, role);
+                self.favourites_menu(ui, role);
             }
             ui.separator();
             if !on_dev && self.path_edit.as_ref().is_some_and(|(r, _)| *r == role) {

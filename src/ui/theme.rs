@@ -633,6 +633,27 @@ pub fn install_fonts(ctx: &egui::Context) {
                 }),
         ),
     );
+    // egui's Windows system-font fallback only asks the generic families
+    // (Arial, Segoe UI, Segoe UI Emoji, Cambria Math…), none of which has
+    // ☆ ★ ⏷ ⌫ ✎ and friends, so they drew as boxes. Segoe UI Symbol has
+    // them all; put it last in every family, ahead of the system lookup.
+    #[cfg(windows)]
+    if let Some(dir) = std::env::var_os("WINDIR") {
+        let path = std::path::Path::new(&dir).join("Fonts").join("seguisym.ttf");
+        if let Ok(bytes) = std::fs::read(path) {
+            fonts.font_data.insert(
+                "segoe-symbol".to_owned(),
+                std::sync::Arc::new(egui::FontData::from_owned(bytes)),
+            );
+            for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+                fonts
+                    .families
+                    .entry(family)
+                    .or_default()
+                    .push("segoe-symbol".to_owned());
+            }
+        }
+    }
     let mut fam = vec!["frucade".to_owned()];
     fam.extend(
         fonts

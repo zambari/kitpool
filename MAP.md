@@ -64,7 +64,7 @@ above the preset list. Data: `ActiveJob` and `Batch` in `src/app/mod.rs`,
 | Control | Where |
 |---|---|
 | Pane title, path label / typed path bar | `show_pane`; `App::path_editor` in `src/app/nav.rs` |
-| ★ favourites menu, `💾 ⏷` drives menu | `App::favourites_menu`, `App::drives_menu` in `src/app/nav.rs` |
+| `💾 ⏷` drives menu (Windows: volume label + letter), ★ favourites menu | `App::favourites_menu`, `App::drives_menu` in `src/app/nav.rs` |
 | Device connection badge (● name / offline) | `App::device_badge` |
 | Tab strip, `+` new tab, 🎹 open +Drive tab (Source only), × close, tab right-click menu, drops on tabs. The Destination strip lists local tabs only and is hidden while +DRIVE shows | `App::tab_strip` |
 | Sort headers, filter box, **🌲 Tree**, **All files**, **Shorten** | `header` in `src/ui/file_table.rs` |
