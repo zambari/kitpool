@@ -169,7 +169,7 @@ fn head(format: &str, model: Model, structs: String) -> Head {
     Head {
         format: format.into(),
         version: VERSION,
-        app: format!("sample_manager {}", env!("CARGO_PKG_VERSION")),
+        app: format!("KitPool {}", env!("CARGO_PKG_VERSION")),
         model: model.name().into(),
         saved: dump::stamp(),
         structs,

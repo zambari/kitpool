@@ -517,7 +517,7 @@ impl App {
                 let Some(dest_dir) = op.dst.parent().map(Path::to_path_buf) else {
                     return;
                 };
-                let tmp = std::env::temp_dir().join("sample_manager_upload");
+                let tmp = crate::paths::temp("upload");
                 if let Err(e) = std::fs::create_dir_all(&tmp) {
                     self.errors.push(format!("{}: {e}", tmp.display()));
                     return;

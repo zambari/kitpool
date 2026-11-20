@@ -12,6 +12,7 @@ mod links;
 mod prints;
 mod log;
 mod ops;
+mod paths;
 mod pane;
 mod preview;
 mod rename;
@@ -41,10 +42,9 @@ fn main() -> eframe::Result {
     // swapped device would keep being looked for under its old port.
     let _midi = midir::MidiInput::new("KitPool");
 
-    // The app is called KitPool, but eframe uses this id as the folder for
-    // saved window and UI state. Keep the old name so existing settings load.
+    // eframe uses this id as the folder for saved window and UI state.
     eframe::run_native(
-        "Sample Manager",
+        paths::APP_ID,
         native_options,
         Box::new(|cc| Ok(Box::new(app::App::new(cc.egui_ctx.clone(), cc.storage)))),
     )

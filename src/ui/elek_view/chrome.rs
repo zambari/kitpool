@@ -295,7 +295,7 @@ fn file_menu(ui: &mut egui::Ui, st: &mut ElekState, out: &mut Vec<ElekIntent>, w
         let can_dump = can_save && st.project.as_ref().is_some_and(|p| p.from_file.is_none());
         if ui
             .add_enabled(can_dump, egui::Button::new("Save debug dump"))
-            .on_hover_text("The project as read (raw .syx, decoded structs, names and strings) to ~/Documents/sample_manager/project_dumps, for format research. Includes project pool and track sounds; saved +Drive presets have their own debug dump on Presets.")
+            .on_hover_text("The project as read (raw .syx, decoded structs, names and strings) to ~/Documents/KitPool/project_dumps, for format research. Includes project pool and track sounds; saved +Drive presets have their own debug dump on Presets.")
             .clicked()
         {
             out.push(ElekIntent::SaveDump);

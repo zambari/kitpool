@@ -1,7 +1,7 @@
 //! The app's small on-disk stores (`device_links.tsv`, `fingerprints.tsv`):
 //! tab-separated lines, appended as things happen, later lines winning,
 //! compacted on start. The first line names the store and its version
-//! (`#sample_manager fingerprints v1`), so a file from a different version
+//! (`#kitpool fingerprints v1`), so a file from a different version
 //! is noticed instead of misread. Problems go to the log.
 
 use std::io::Write;
@@ -20,7 +20,7 @@ pub enum Read {
 }
 
 fn header(name: &str, version: u32) -> String {
-    format!("#sample_manager {name} v{version}\n")
+    format!("#kitpool {name} v{version}\n")
 }
 
 /// Read store `p`. Read errors are logged and count as missing.

@@ -1,8 +1,6 @@
-//! Append-only diagnostic log: `~/Library/Logs/sample_manager.log` on macOS,
-//! `%LOCALAPPDATA%\sample_manager\sample_manager.log` on Windows,
-//! `~/.local/state/sample_manager.log` elsewhere.
+//! Append-only diagnostic log at [`crate::paths::log_file`] (`KitPool.log`).
 //! The UI only shows the latest error; this keeps all of them.
-//! Past [`MAX_BYTES`] the file moves aside to `sample_manager.old.log`
+//! Past [`MAX_BYTES`] the file moves aside to `KitPool.old.log`
 //! (replacing the previous one), so the two together stay bounded.
 
 use std::io::Write;
@@ -12,19 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const MAX_BYTES: u64 = 1 << 20;
 
 fn path() -> Option<PathBuf> {
-    if cfg!(target_os = "windows") {
-        let dir = PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("sample_manager");
-        let _ = std::fs::create_dir_all(&dir);
-        return Some(dir.join("sample_manager.log"));
-    }
-    let home = PathBuf::from(std::env::var_os("HOME")?);
-    if cfg!(target_os = "macos") {
-        Some(home.join("Library/Logs/sample_manager.log"))
-    } else {
-        let dir = home.join(".local/state");
-        let _ = std::fs::create_dir_all(&dir);
-        Some(dir.join("sample_manager.log"))
-    }
+    crate::paths::log_file()
 }
 
 pub fn line(msg: impl AsRef<str>) {

@@ -5,7 +5,7 @@ use super::*;
 impl App {
     /// Where project and pattern files go by default.
     pub(super) fn elek_files_dir(sub: &str) -> Option<PathBuf> {
-        let d = PathBuf::from(std::env::var_os("HOME")?).join("Documents/sample_manager").join(sub);
+        let d = crate::paths::documents(sub)?;
         let _ = std::fs::create_dir_all(&d);
         Some(d)
     }

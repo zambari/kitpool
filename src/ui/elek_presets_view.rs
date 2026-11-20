@@ -956,7 +956,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut ElekState) -> Vec<ElekIntent> {
                 }
                 ui.separator();
                 if ui.button("Save preset debug dump")
-                    .on_hover_text("Read all saved +Drive banks into ~/Documents/sample_manager/preset_dumps: raw containers, decoded sounds, names, strings and a presets.json backup. Can take several minutes.")
+                    .on_hover_text("Read all saved +Drive banks into ~/Documents/KitPool/preset_dumps: raw containers, decoded sounds, names, strings and a presets.json backup. Can take several minutes.")
                     .clicked() {
                     out.push(ElekIntent::SavePresetDump);
                     ui.close();

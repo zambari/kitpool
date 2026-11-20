@@ -296,7 +296,7 @@ and **Save preset debug dump**. The importable file preserves every saved
 preset's original container bytes, bank and slot locations, and empty slots
 in each included bank. It reads saved device data; push staged edits first
 to include them. Choose a location in the save dialog (initially
-`~/Documents/sample_manager/presets`). Sample references are preserved;
+`~/Documents/KitPool/presets`). Sample references are preserved;
 sample audio is not embedded.
 
 **Load presets…** opens that JSON, or `presets.json` from a new debug dump.
@@ -310,7 +310,7 @@ stages no changes. Unsupported container layouts are refused without staging
 a partial restore.
 
 **Save → Save preset debug dump** reads every saved preset from all +Drive
-banks into a timestamped folder under `~/Documents/sample_manager/preset_dumps`
+banks into a timestamped folder under `~/Documents/KitPool/preset_dumps`
 and reveals it when finished. It saves uncompressed Data API containers,
 supported decoded sound structures, bank and slot names, sound offsets and
 versions, printable strings with byte offsets, and a `presets.json` backup.
@@ -348,8 +348,9 @@ for preview** fills the cache for the whole pool in the background.
 
 Cached samples are kept by content, so they play instantly next time,
 whichever project uses them. The *Cache* menu shows its size and can move
-it to the Trash. It lives in `~/Library/Caches/sample_manager` on macOS
-and `%LOCALAPPDATA%\sample_manager\cache` on Windows.
+it to the Trash. It lives in `~/Library/Caches/KitPool` on macOS
+and `%LOCALAPPDATA%\KitPool\cache` on Windows (see
+[Files KitPool keeps](#files-kitpool-keeps)).
 
 #### Project backup and restore (experimental)
 
@@ -364,7 +365,7 @@ and `%LOCALAPPDATA%\sample_manager\cache` on Windows.
 - A single pattern can be saved the same way (*Save pattern…*, with or
   without samples) and loaded into any slot with *Load pattern here…*.
   Samples it needs that aren't in the pool go into empty slots.
-- Files go to `~/Documents/sample_manager` by default.
+- Files go to `~/Documents/KitPool/projects` and `…/patterns` by default.
 
 This is not yet a replacement for the device's own backups: keep using
 Elektron Transfer or the +Drive's saved projects for anything you can't
@@ -376,6 +377,47 @@ afford to lose.
 > **Save your project on the Digitakt before pushing**, so you can reload
 > it if anything comes out wrong, and only save over it once you've
 > checked the result.
+
+### Files KitPool keeps
+
+Besides the folders you browse, the app writes only to these places
+(Linux uses lowercase `kitpool` under the usual XDG folders):
+
+| What | Windows | macOS |
+|---|---|---|
+| Device links and audio prints | `%APPDATA%\KitPool` | `~/Library/Application Support/KitPool` |
+| Preview cache | `%LOCALAPPDATA%\KitPool\cache\pool` | `~/Library/Caches/KitPool/pool` |
+| Log (`KitPool.log`, `KitPool.old.log` past 1 MB) | `%LOCALAPPDATA%\KitPool` | `~/Library/Logs` |
+| Saved projects, patterns, presets, debug dumps | `Documents\KitPool\…` | `~/Documents/KitPool/…` |
+| Window layout, open tabs | eframe's storage for the app id `KitPool` | same |
+| Staged uploads, copies of device files | system temp, `kitpool_upload`, `kitpool_device` | same |
+
+**`device_links.tsv`** notes, after each upload or download, that a local
+file and a +Drive file hold the same sample (by the +Drive's own content
+hash). It can't be rebuilt, so a file the app can't read is set aside as
+`.bad` rather than replaced.
+
+**`fingerprints.tsv`** holds *audio prints*: KitPool's own hash of a file's
+decoded 16-bit audio, so a local file can be matched to a pool sample when
+there is no link and the file names differ. Headers, markers, names and
+sample rate don't count. Prints are made in the background, never for
+whole folders:
+
+- **Local files**, every 3 seconds while they're open in the editor: the
+  sample, the kit, and the files its slices came from. A file is printed
+  again only when its size or modification time changes. Each one gets
+  several keys: its audio as it is, and as an upload would put it on the
+  device (stereo and each mono fold).
+- **Pool samples**, once a project is loaded: any sample with an unchanged
+  downloaded copy (the preview cache or your own download) is printed from
+  that copy. **⬇ Fetch all for preview** therefore prints the whole pool.
+
+Prints are what let a slice's **Reveal in source pane** find its file in a
+kit fetched from the device, and a local file find its pool slot. New
+prints are appended; on start the file is compacted when it holds many
+superseded lines (keeping up to 100,000 local files). Everything in it can
+be made again from the audio, so deleting it is safe: it refills as files
+are opened.
 
 ### Drag and drop
 

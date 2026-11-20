@@ -686,7 +686,7 @@ impl App {
         let staged = match f.local_dir.filter(|_| f.keep_local) {
             Some(d) => d.join(format!("{name}.wav")),
             None => {
-                let tmp = std::env::temp_dir().join("sample_manager_upload");
+                let tmp = crate::paths::temp("upload");
                 if let Err(e) = std::fs::create_dir_all(&tmp) {
                     self.errors.push(format!("{}: {e}", tmp.display()));
                     return;
@@ -747,7 +747,7 @@ impl App {
             .parent()
             .and_then(|p| p.strip_prefix("/").ok())
             .unwrap_or(Path::new(""));
-        let dir = std::env::temp_dir().join("sample_manager_device").join(rel);
+        let dir = crate::paths::temp("device").join(rel);
         let name = src
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())

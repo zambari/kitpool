@@ -205,7 +205,7 @@ const STORE: &str = "fingerprints";
 const VERSION: u32 = 1;
 
 fn path() -> Option<PathBuf> {
-    Some(crate::links::data_dir()?.join("fingerprints.tsv"))
+    Some(crate::paths::data_dir()?.join("fingerprints.tsv"))
 }
 
 fn ok(p: &Path) -> bool {

@@ -11,7 +11,7 @@ use crate::pane::Role;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-pub const KEY: &str = "sample_manager_state";
+pub const KEY: &str = "kitpool_state";
 
 /// Short, because the dev loop kills the app rather than quitting it --
 /// whatever wasn't saved by then is lost.

@@ -69,8 +69,7 @@ impl App {
                 }
                 ElekIntent::SaveDump => {
                     let Some(p) = &self.elek.project else { continue };
-                    let Some(home) = std::env::var_os("HOME") else { continue };
-                    let root = PathBuf::from(home).join("Documents/sample_manager/project_dumps");
+                    let Some(root) = crate::paths::documents("project_dumps") else { continue };
                     match p.save_dump(&root) {
                         Ok(dir) => {
                             crate::log::line(format!("elek: dump saved to {}", dir.display()));
@@ -85,11 +84,10 @@ impl App {
                 }
                 ElekIntent::SavePresetDump => {
                     if self.elek.presets.dumping.is_some() { continue; }
-                    let Some(home) = std::env::var_os("HOME") else {
-                        self.elek.presets.status = "Couldn't save preset dump: HOME is not set".into();
+                    let Some(root) = crate::paths::documents("preset_dumps") else {
+                        self.elek.presets.status = "Couldn't save preset dump: no home folder".into();
                         continue;
                     };
-                    let root = PathBuf::from(home).join("Documents/sample_manager/preset_dumps");
                     self.elek.presets.dumping = Some(("Waiting to read presets".into(), 0, 0));
                     self.device.elek(ElekCmd::SavePresetDump(root));
                 }

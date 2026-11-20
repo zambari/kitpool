@@ -124,37 +124,11 @@ pub fn stamp(p: &Path) -> Option<(u64, u64)> {
 /// Where pool samples fetched only for previewing are kept, one folder per
 /// `(hash, length)`. Kept across restarts; the Elek view can empty it.
 pub fn pool_cache_dir() -> Option<PathBuf> {
-    let dir = if cfg!(target_os = "windows") {
-        PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("sample_manager").join("cache")
-    } else {
-        let home = PathBuf::from(std::env::var_os("HOME")?);
-        if cfg!(target_os = "macos") {
-            home.join("Library/Caches/sample_manager")
-        } else {
-            home.join(".cache/sample_manager")
-        }
-    };
-    Some(dir.join("pool"))
+    Some(crate::paths::cache_dir()?.join("pool"))
 }
 
 fn path() -> Option<PathBuf> {
-    Some(data_dir()?.join("device_links.tsv"))
-}
-
-/// The app's own data folder (links, fingerprints): one per user, not per
-/// drive, so files on any volume are known wherever they're used from.
-pub fn data_dir() -> Option<PathBuf> {
-    let dir = if cfg!(target_os = "windows") {
-        PathBuf::from(std::env::var_os("APPDATA")?).join("sample_manager")
-    } else {
-        let home = PathBuf::from(std::env::var_os("HOME")?);
-        if cfg!(target_os = "macos") {
-            home.join("Library/Application Support/sample_manager")
-        } else {
-            home.join(".local/share/sample_manager")
-        }
-    };
-    Some(dir)
+    Some(crate::paths::data_dir()?.join("device_links.tsv"))
 }
 
 const STORE: &str = "device_links";
