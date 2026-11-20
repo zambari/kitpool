@@ -146,13 +146,28 @@ impl Conn {
         };
 
         let (tx, rx) = channel();
+        // WinMM (midir on Windows) hands SysEx over in 1024-byte buffers, one
+        // callback each, so a long dump arrives as an `F0…` head and headless
+        // continuations. CoreMIDI and ALSA deliver whole messages, which pass
+        // straight through. Reassemble until `F7`; a new `F0` drops an
+        // unfinished one. Short messages (clock, notes) are ignored and don't
+        // break a message in progress.
+        let mut sysex: Option<Vec<u8>> = None;
         let _input = input
             .connect(
                 &in_port,
                 "kitpool-in",
                 move |_, msg, _| {
-                    if msg.first() == Some(&0xF0) {
-                        let _ = tx.send(msg.to_vec());
+                    match msg.first() {
+                        Some(0xF0) => sysex = Some(msg.to_vec()),
+                        Some(&b) if b < 0x80 || b == 0xF7 => match sysex.as_mut() {
+                            Some(buf) => buf.extend_from_slice(msg),
+                            None => return,
+                        },
+                        _ => return,
+                    }
+                    if sysex.as_ref().and_then(|b| b.last()) == Some(&0xF7) {
+                        let _ = tx.send(sysex.take().unwrap_or_default());
                     }
                 },
                 (),
