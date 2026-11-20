@@ -167,8 +167,22 @@ fn mb(b: u64) -> String {
 
 /// Preview toggle, background fetch and the cache size.
 pub(super) fn preview_tools(ui: &mut egui::Ui, st: &mut ElekState, out: &mut Vec<ElekIntent>) {
-    ui.toggle_value(&mut st.preview, "🔊 Preview on click")
-        .on_hover_text("Clicking a slot, or moving onto it with ↑/↓, plays it. Without a local copy it is fetched from the device first (that slot jumps the fetch queue). Space plays the slot under the cursor either way.");
+    if ui
+        .toggle_value(&mut st.preview, "🔊 Preview on click")
+        .on_hover_text("Clicking a slot, or moving onto it with ↑/↓, plays it. Without a local copy it is fetched from the device first (that slot jumps the fetch queue). Space plays the slot under the cursor either way.")
+        .changed()
+        && st.preview
+    {
+        st.open_on_click = false;
+    }
+    if ui
+        .toggle_value(&mut st.open_on_click, "✏ Open on click")
+        .on_hover_text("Clicking a slot opens its local copy in the editor. Without a local copy it is fetched from the device first (that slot jumps the fetch queue).")
+        .changed()
+        && st.open_on_click
+    {
+        st.preview = false;
+    }
     match st.fetch {
         Some((done, total)) => {
             ui.add(theme::progress_bar(done as f32 / total.max(1) as f32).desired_width(140.0).text(format!("Fetching {done}/{total}")));

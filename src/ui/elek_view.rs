@@ -97,6 +97,9 @@ pub struct ElekState {
     ping_scroll: Option<usize>,
     /// Clicking a slot (or moving the cursor onto it) plays it.
     pub preview: bool,
+    /// Clicking a slot opens its local copy in the editor (fetched first if
+    /// needed). Exclusive with `preview`.
+    pub open_on_click: bool,
     /// Name of the sample the editor is playing right now, set by the app
     /// each frame: the mode header's Sample Editor title turns into a
     /// PLAYING banner that leads back to it.

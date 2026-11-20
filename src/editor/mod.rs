@@ -83,8 +83,8 @@ pub struct HistPrefs {
     pub bucket_db: f32,
     /// Left edge of the strip, dB after gain.
     pub floor_db: f32,
-    /// "Reasonably zero": lead / tail frames under this (after gain) count
-    /// as silence in the stats box.
+    /// "Reasonably zero": frames under this (after gain) count as quiet in
+    /// the histogram's "quiet" share and shading.
     pub zero_db: f32,
     /// A second, higher "nearly silent" threshold for the stats box.
     pub zero2_db: f32,
@@ -94,7 +94,7 @@ pub struct HistPrefs {
 
 impl Default for HistPrefs {
     fn default() -> Self {
-        Self { bucket_db: 2.0, floor_db: -60.0, zero_db: -48.0, zero2_db: -36.0, log: true }
+        Self { bucket_db: 1.0, floor_db: -60.0, zero_db: -48.0, zero2_db: -36.0, log: true }
     }
 }
 

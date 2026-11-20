@@ -24,7 +24,7 @@ mod toolbar;
 mod trim;
 mod waveform;
 
-use stats_view::{STATS_H, stats_panel};
+use stats_view::{stats_height, stats_panel};
 use overview::overview;
 use scope::scope;
 use trim::trim_section;
@@ -279,15 +279,14 @@ pub fn show(
 
     let pn = ed.prefs.panels.clone();
 
-    // The waveform takes whatever height the other shown panels leave.
+    // The waveform takes whatever height the other shown panels leave. The
+    // panels under it are measured as drawn last frame; the estimate below
+    // only covers the first frame.
     let avail = ui.available_size();
+    let bottom = ui.cursor().top() + avail.y;
     let phase = pn.stats && ed.is_multichannel();
     let sec = SECTION_H + ui.spacing().item_spacing.y;
     let mut reserved = 0.0;
-    // The wave is always shown.
-    reserved += sec;
-    // File row (Save / Export).
-    reserved += ui.spacing().interact_size.y + sec;
     if pn.nums {
         reserved += ui.spacing().interact_size.y + sec;
     }
@@ -301,7 +300,7 @@ pub fn show(
         reserved += 20.0;
     }
     if pn.stats {
-        reserved += STATS_H + sec;
+        reserved += stats_height(ui.ctx()) + sec;
     }
     // Measure the wrapped help text so the waveform leaves room for it.
     let help_font = egui::TextStyle::Small.resolve(ui.style());
@@ -324,7 +323,9 @@ pub fn show(
     file_row(ui, ed, can_export, slots, &mut out);
 
     section_header(ui, "Wave");
-    let wave_h = (avail.y - reserved - 12.0).max(80.0);
+    let tail_id = egui::Id::unique("editor_tail_h");
+    let tail = ui.ctx().data(|d| d.get_temp::<f32>(tail_id)).unwrap_or(reserved);
+    let wave_h = (bottom - ui.cursor().top() - tail - 12.0).max(80.0);
     let (rect, _) = ui.allocate_exact_size(vec2(avail.x, wave_h), Sense::hover());
     waveform(ui, ed, &pv, rect, focused, &fades, trim.as_ref(), &slots.slice_homes, &mut out);
 
@@ -352,6 +353,13 @@ pub fn show(
     if pn.help {
         section_header(ui, "Help");
         ui.label(RichText::new(crate::keymap::EDITOR_HELP).weak().small());
+    }
+
+    // Remember how tall the panels under the wave really were.
+    let measured = ui.cursor().top() - rect.bottom();
+    if (measured - tail).abs() > 0.5 {
+        ui.ctx().data_mut(|d| d.insert_temp(tail_id, measured));
+        ui.ctx().request_repaint();
     }
     out
 }

@@ -474,6 +474,11 @@ into `target/bundle/KitPool Windows.zip`. It needs
 C runtime and Windows SDK into cargo-xwin's cache, which means accepting
 Microsoft's license for them.
 
+
+## Improving KitPool
+
+For bug reports or feature requests contact zambari@gmail.com. Feel free to fork, or produce pull requests. 
+
 ## Acknowledgements
 
 The Digitakt support would not exist without **Mark Lentczner's

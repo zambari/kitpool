@@ -17,8 +17,9 @@ use crate::ui::theme::{TINY, tiny_pick, tiny_row};
 const HI_DB: f32 = 12.0;
 const STATS_W: f32 = 210.0;
 const MIN_HIST_W: f32 = 120.0;
-/// Fits the stats box: header, two silence rows, pk/rms, lim.
-const H: f32 = 58.0;
+/// Fits the stats box: header, silence row, pk/rms, lim.
+const H: f32 = 47.0;
+const BUCKETS: [(f32, &str); 4] = [(0.5, "0.5 dB"), (1.0, "1 dB"), (2.0, "2 dB"), (3.0, "3 dB")];
 const LINE_H: f32 = 11.0;
 
 fn pct(n: u64, total: u64) -> String {
@@ -49,11 +50,14 @@ fn db_str(d: f32) -> String {
 pub(super) fn histogram_panel(ui: &mut Ui, ed: &mut Editor) {
     section_header(ui, "Histogram");
     let hp = &mut ed.prefs.hist;
+    // A saved bucket that's no longer offered (6 dB) falls back to 1 dB.
+    if !BUCKETS.iter().any(|(v, _)| *v == hp.bucket_db) {
+        hp.bucket_db = 1.0;
+    }
     tiny_row(ui, |ui| {
-        tiny_pick(ui, "bucket", &mut hp.bucket_db, &[(1.0, "1 dB"), (2.0, "2 dB"), (3.0, "3 dB"), (6.0, "6 dB")]);
+        tiny_pick(ui, "bucket", &mut hp.bucket_db, &BUCKETS);
         tiny_pick(ui, "floor", &mut hp.floor_db, &[(-48.0, "-48"), (-60.0, "-60"), (-72.0, "-72"), (-96.0, "-96")]);
-        tiny_pick(ui, "zero≈", &mut hp.zero_db, &[(-36.0, "-36"), (-48.0, "-48"), (-60.0, "-60"), (-72.0, "-72"), (-90.0, "-90")])
-            ;
+        tiny_pick(ui, "zero≈", &mut hp.zero_db, &[(-36.0, "-36"), (-48.0, "-48"), (-60.0, "-60"), (-72.0, "-72"), (-90.0, "-90")]);
         tiny_pick(ui, "zero≈2", &mut hp.zero2_db, &[(-18.0, "-18"), (-24.0, "-24"), (-30.0, "-30"), (-36.0, "-36"), (-42.0, "-42")]);
         tiny_pick(ui, "scale", &mut hp.log, &[(true, "log"), (false, "lin")]);
     });
@@ -62,7 +66,6 @@ pub(super) fn histogram_panel(ui: &mut Ui, ed: &mut Editor) {
         ui.label(RichText::new("no audio").size(TINY).weak());
         return;
     };
-    let edges = ed.edges(hp.zero_db);
     let edges2 = ed.edges(hp.zero2_db);
 
     let g = stats::from_db(db);
@@ -140,11 +143,6 @@ pub(super) fn histogram_panel(ui: &mut Ui, ed: &mut Editor) {
             let mut lines: Vec<(String, String, Color32)> = vec![
                 (String::new(), row("lead".into(), "tail".into()), dim),
                 (
-                    format!("<{:.0}", hp.zero_db),
-                    row(pct(edges.lead_quiet as u64, total), pct(edges.tail_quiet as u64, total)),
-                    txt,
-                ),
-                (
                     format!("<{:.0}", hp.zero2_db),
                     row(pct(edges2.lead_quiet as u64, total), pct(edges2.tail_quiet as u64, total)),
                     txt,
@@ -163,11 +161,10 @@ pub(super) fn histogram_panel(ui: &mut Ui, ed: &mut Editor) {
             }
         }
         resp.on_hover_text(format!(
-            "<{:.0} / <{:.0}: share of the {region} before the first / after the last frame reaching that level, \
-             after gain (the zero≈ and zero≈2 picks).\n\
+            "<{:.0}: share of the {region} before the first / after the last frame reaching that level, \
+             after gain (the zero≈2 pick).\n\
              pk/rms: peak and RMS after gain and limiter (from the histogram, ~0.2 dB).\n\
              lim (shown while the limiter works): energy it takes off, compared with plain gain.",
-            hp.zero_db,
             hp.zero2_db,
         ));
 
@@ -194,12 +191,13 @@ pub(super) fn histogram_panel(ui: &mut Ui, ed: &mut Editor) {
             let n = col[c].round() as u64;
             let lo = floor + c as f32 * bucket;
             let hi = (lo + bucket).min(HI_DB);
+            let dp = if bucket < 1.0 { 1 } else { 0 };
             let range = if c == 0 {
-                format!("below {hi:.0} dB")
+                format!("below {hi:.dp$} dB")
             } else if c == cols - 1 {
-                format!("above {lo:.0} dB")
+                format!("above {lo:.dp$} dB")
             } else {
-                format!("between {lo:.0} and {hi:.0} dB")
+                format!("between {lo:.dp$} and {hi:.dp$} dB")
             };
             // Highlight the hovered column.
             let cw = rect.width() * bucket / (HI_DB - floor);
@@ -241,6 +239,12 @@ fn draw_hist(ui: &Ui, rect: Rect, col: &[f64], floor: f32, bucket: f32, lim: &Li
     }
     let scale = |n: f64| if log { ((1.0 + n).ln() / (1.0 + max).ln()) as f32 } else { (n / max) as f32 };
     let cw = (bucket / (HI_DB - floor)) * rect.width();
+    // Narrow (0.5 dB) bars sit flush: a 1 px gap on a ~4 px pitch beats
+    // against the pixel grid and reads as moiré. Edges snap to physical
+    // pixels so neighbours share an edge instead of leaving AA seams.
+    let gap = if bucket < 1.0 { 0.0 } else { 1.0 };
+    let ppp = ui.ctx().pixels_per_point();
+    let snap = |x: f32| (x * ppp).round() / ppp;
     for (i, &n) in col.iter().enumerate() {
         if n < 0.5 {
             continue;
@@ -254,8 +258,8 @@ fn draw_hist(ui: &Ui, rect: Rect, col: &[f64], floor: f32, bucket: f32, lim: &Li
             Level::Clean => crate::ui::theme::WAVE,
         };
         let hgt = (scale(n) * (base - top)).max(1.0);
-        let x0 = rect.left() + i as f32 * cw;
-        let x1 = (x0 + cw - 1.0).max(x0 + 1.0).min(rect.right());
+        let x0 = snap(rect.left() + i as f32 * cw);
+        let x1 = (snap(rect.left() + (i + 1) as f32 * cw) - gap).max(x0 + 1.0).min(rect.right());
         p.rect_filled(Rect::from_min_max(Pos2::new(x0, base - hgt), Pos2::new(x1, base)), 0.0, color);
     }
 }

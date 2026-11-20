@@ -290,6 +290,11 @@ impl Worker {
                 }
                 Cmd::Elek(cmd) => self.elek(cmd),
                 Cmd::Release => self.release(),
+                Cmd::Repick => {
+                    if self.conn.take().is_some() {
+                        crate::log::line("device: ports closed (other unit picked)".to_owned());
+                    }
+                }
             }
             // Renames held back while that ran go before the waiting jobs.
             self.apply_held();

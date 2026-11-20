@@ -92,8 +92,8 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(60);
 const HANDSHAKE_RETRY_EVERY: Duration = Duration::from_secs(5);
 
 impl Conn {
-    /// Try each Elektron-looking port in turn; the first that answers and
-    /// has a sample drive wins.
+    /// The unit the user picked, or else each Elektron-looking port in
+    /// turn; the first that answers and has a sample drive wins.
     pub(super) fn open() -> Result<Self, String> {
         let input = midir::MidiInput::new("KitPool").map_err(|e| e.to_string())?;
         let names: Vec<String> = input
@@ -101,6 +101,7 @@ impl Conn {
             .iter()
             .filter_map(|p| input.port_name(p).ok())
             .filter(|n| elektron_port(n))
+            .filter(|n| super::presence::picked().is_none_or(|p| p == **n))
             .collect();
         drop(input);
         if names.is_empty() {

@@ -8,8 +8,22 @@ use super::*;
 use crate::audio::spectrum::{self, FLOOR_DB};
 use crate::editor::{LoudnessView, WATERFALL_BANDS};
 
-/// Height of the three-column block (not counting the phase meter).
-pub(super) const STATS_H: f32 = 150.0;
+/// Minimum height of the three-column block (not counting the phase meter).
+/// The real height follows the tables, measured last frame: see [`stats_height`].
+const STATS_H: f32 = 150.0;
+/// Room left under the tallest table, so the waterfall floats above the edge.
+const STATS_PAD: f32 = 6.0;
+
+fn stats_h_id() -> egui::Id {
+    egui::Id::unique("editor_stats_h")
+}
+
+/// Height of the three-column block: the tallest table as drawn last frame
+/// plus padding, never below [`STATS_H`].
+pub(super) fn stats_height(ctx: &egui::Context) -> f32 {
+    ctx.data(|d| d.get_temp::<f32>(stats_h_id())).unwrap_or(STATS_H).max(STATS_H)
+}
+
 /// Narrower than this, the waterfall is left out.
 const MIN_WATERFALL_W: f32 = 140.0;
 /// Waterfall level range, dBFS after gain and tilt.
@@ -18,22 +32,33 @@ const WF_BOTTOM_DB: f32 = -84.0;
 
 pub(super) fn stats_panel(ui: &mut Ui, ed: &mut Editor, pv: &PlayView) {
     section_header(ui, "Stats");
+    crate::ui::theme::readout_text(ui, |ui| stats_body(ui, ed, pv));
+}
+
+fn stats_body(ui: &mut Ui, ed: &mut Editor, pv: &PlayView) {
     if ed.is_multichannel() {
         phase_meter(ui, ed, pv);
     }
     let w = ui.available_width();
+    let h = stats_height(ui.ctx());
     ui.allocate_ui_with_layout(
-        vec2(w, STATS_H),
+        vec2(w, h),
         egui::Layout::left_to_right(egui::Align::Min),
         |ui| {
-            ui.set_min_height(STATS_H);
-            ui.vertical(|ui| levels_table(ui, ed));
+            ui.set_min_height(h);
+            let lh = ui.vertical(|ui| levels_table(ui, ed)).response.rect.height();
             ui.separator();
-            ui.vertical(|ui| loudness_table(ui, ed));
+            let rh = ui.vertical(|ui| loudness_table(ui, ed)).response.rect.height();
+            let need = lh.max(rh) + STATS_PAD;
+            if (need - h).abs() > 0.5 {
+                ui.ctx().data_mut(|d| d.insert_temp(stats_h_id(), need));
+                ui.ctx().request_repaint();
+            }
             ui.separator();
             let ww = ui.available_width();
             if ww >= MIN_WATERFALL_W {
-                let (rect, resp) = ui.allocate_exact_size(vec2(ww, STATS_H), Sense::hover());
+                // Stops short of the block's bottom so it floats.
+                let (rect, resp) = ui.allocate_exact_size(vec2(ww, h - STATS_PAD), Sense::hover());
                 let live = pv.playing;
                 let rows: Vec<Vec<f32>> = if live {
                     ed.live_waterfall(pv.pos)
@@ -309,7 +334,8 @@ fn waterfall(
     p.rect_filled(rect, 2.0, bg);
 
     let f_max = rate as f32 / 2.0;
-    let label_h = 11.0;
+    // Frequency labels plus a strip of background under them.
+    let label_h = 15.0;
     let plot = Rect::from_min_max(rect.min + vec2(4.0, 4.0), Pos2::new(rect.right() - 4.0, rect.bottom() - label_h));
     let depth_x = plot.width() * 0.28;
     let depth_y = plot.height() * 0.5;

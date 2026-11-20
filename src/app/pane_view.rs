@@ -394,13 +394,35 @@ impl App {
     }
 
     pub(super) fn device_badge(&mut self, ui: &mut egui::Ui) {
+        let resp = self.device_badge_label(ui);
+        // Several units plugged in: the badge picks which one to use.
+        let ports = crate::device::midi_ports();
+        if ports.devices.len() < 2 || crate::device::switched_off() {
+            return;
+        }
+        let resp = resp.interact(egui::Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+        let idle = self.active_jobs.is_empty();
+        let mut pick = None;
+        egui::Popup::menu(&resp).show(|ui| {
+            ui.label(egui::RichText::new("Use device").small().weak());
+            pick = crate::ui::infobox::device_picker(ui, &ports, idle);
+            if pick.is_some() {
+                ui.close();
+            }
+        });
+        if let Some(name) = pick {
+            self.device.pick(name);
+        }
+    }
+
+    fn device_badge_label(&mut self, ui: &mut egui::Ui) -> egui::Response {
         if let Some(tip) = crate::device::presence().problem() {
             let many = matches!(crate::device::presence(), crate::device::Presence::Many(_));
             let off = crate::device::presence() == crate::device::Presence::Off;
             let text = if many { "⚠ several devices" } else if off { "○ switched off" } else { "● disconnected" };
-            ui.label(egui::RichText::new(text).color(ui.visuals().error_fg_color).small())
+            return ui
+                .label(egui::RichText::new(text).color(ui.visuals().error_fg_color).small())
                 .on_hover_text(tip);
-            return;
         }
         let (text, color, tip) = match &self.device_status {
             Some(Ok(name)) => (
@@ -420,7 +442,7 @@ impl App {
             ),
         };
         ui.label(egui::RichText::new(text).color(color).small())
-            .on_hover_text(tip);
+            .on_hover_text(tip)
     }
 
     /// Whether a drop moves or copies. On the same storage (computer to

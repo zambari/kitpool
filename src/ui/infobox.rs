@@ -1,5 +1,6 @@
 //! The KitPool title button and About popup: build details, links, the MIDI
-//! ports the system offers (the device's marked "(using)"), and Reset state.
+//! ports the system offers (the device's marked "(using)"), a picker when
+//! several Elektron units are plugged in, and Reset state.
 
 const POPUP_W: f32 = 540.0;
 const PAD: i8 = 28;
@@ -10,10 +11,12 @@ const MIDI_TEXT: f32 = 11.0;
 pub enum AboutIntent {
     /// Forget the saved state and restart as on first run.
     ResetState,
+    /// Use this unit (its MIDI input name) for the rest of the run.
+    PickDevice(String),
 }
 
 /// `ports` is only called while the popup is open. `can_reset` is false
-/// while a transfer runs.
+/// while a transfer runs; so is switching units.
 pub fn show(
     ui: &mut egui::Ui,
     ports: fn() -> crate::device::MidiPorts,
@@ -47,7 +50,9 @@ pub fn show(
             ui.hyperlink(env!("CARGO_PKG_REPOSITORY"));
             ui.hyperlink(env!("CARGO_PKG_HOMEPAGE"));
             ui.add_space(8.0);
-            midi_ports(ui, &ports());
+            if let Some(name) = midi_ports(ui, &ports(), can_reset) {
+                out = Some(AboutIntent::PickDevice(name));
+            }
             ui.add_space(4.0);
             if reset_state(ui, confirm_id, can_reset) {
                 out = Some(AboutIntent::ResetState);
@@ -60,9 +65,33 @@ pub fn show(
     out
 }
 
+/// The Elektron units plugged in, one button each, the one in use
+/// highlighted. Returns the one clicked. `enabled` is false while a
+/// transfer runs.
+pub fn device_picker(ui: &mut egui::Ui, p: &crate::device::MidiPorts, enabled: bool) -> Option<String> {
+    let current = p
+        .claimed
+        .as_ref()
+        .map(|(i, _)| i.clone())
+        .or_else(crate::device::picked);
+    let mut out = None;
+    for n in &p.devices {
+        let using = current.as_deref() == Some(n.as_str());
+        let resp = ui
+            .add_enabled(enabled, egui::Button::selectable(using, n))
+            .on_disabled_hover_text("Wait for the transfer to finish");
+        if resp.clicked() && !using {
+            out = Some(n.clone());
+        }
+    }
+    out
+}
+
 /// Inputs and outputs side by side, small, in a darker inset box so the
-/// version and links above stay the popup's main content.
-fn midi_ports(ui: &mut egui::Ui, p: &crate::device::MidiPorts) {
+/// version and links above stay the popup's main content. With several
+/// units plugged in, a picker above them; returns the unit clicked.
+fn midi_ports(ui: &mut egui::Ui, p: &crate::device::MidiPorts, can_pick: bool) -> Option<String> {
+    let mut picked = None;
     let (used_in, used_out) = match &p.claimed {
         Some((i, o)) => (Some(i.as_str()), Some(o.as_str())),
         None => (None, None),
@@ -89,6 +118,11 @@ fn midi_ports(ui: &mut egui::Ui, p: &crate::device::MidiPorts) {
         .inner_margin(12)
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
+            if p.devices.len() > 1 {
+                ui.label(egui::RichText::new("Elektron devices").size(MIDI_TEXT).strong());
+                ui.horizontal_wrapped(|ui| picked = device_picker(ui, p, can_pick));
+                ui.add_space(8.0);
+            }
             ui.columns(2, |cols| {
                 list(&mut cols[0], "MIDI inputs", &p.inputs, used_in);
                 list(&mut cols[1], "MIDI outputs", &p.outputs, used_out);
@@ -102,6 +136,7 @@ fn midi_ports(ui: &mut egui::Ui, p: &crate::device::MidiPorts) {
                 );
             }
         });
+    picked
 }
 
 /// Reset state, then a confirmation. True once confirmed.

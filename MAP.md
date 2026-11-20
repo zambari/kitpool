@@ -73,6 +73,10 @@ control→function tables are in [MAP_full.md](MAP_full.md) (not maintained).
   presence scan so a DAW can use the device (`Presence::Off`); unplugging folds
   the same panels but keeps scanning. Reconnect may be a different unit
   (`App::last_unit`), which drops the old project.
+- **Several units plugged in**: the user picks one per run (device badge menu
+  or the About box's MIDI panel → `Device::pick`). Not saved. A unit is its
+  MIDI input name, paired with the output of the same name. The picked port
+  makes the scan report `One(pick)`; unplugging it clears the pick.
 - A read stopped before the sound pool arrives leaves `sounds_read` false and
   **blocks pool pushes** (`ElekState::pool_pushable`), because pool pushes
   renumber sound locks in every pattern.
@@ -97,7 +101,8 @@ control→function tables are in [MAP_full.md](MAP_full.md) (not maintained).
 
 Everything shared is in `src/ui/theme.rs`: palette, accent, device yellow and
 wash/frame/dimming, OLED font and colours, shared widgets (`pane_tab`,
-`soft_toggle`, `section_header`…). Use `theme::progress_bar` for every bar. View-
+`soft_toggle`, `section_header`…). Use `theme::progress_bar` for every bar, and
+`theme::readout_text` for dense figure tables (editor Stats). View-
 specific colours and metrics are consts at the top of the view file.
 
 ## Elsewhere

@@ -5,6 +5,11 @@
 //!
 //! This only looks at port names; it never talks to the device.
 //!
+//! With more than one plugged in, the user picks one for this run
+//! ([`pick`]); the scan then reports only that one, and other units are
+//! listed in [`MidiPorts::devices`] to switch to. Not saved: a fresh launch
+//! starts unpicked again.
+//!
 //! The user can also switch the device off (the DEVICE switch): then
 //! [`presence`] says [`Presence::Off`], the scan stops, and the worker
 //! drops its MIDI ports, so a DAW can have the device to itself.
@@ -47,7 +52,7 @@ impl Presence {
                     .into(),
             ),
             Presence::Many(names) => Some(format!(
-                "More than one Elektron device is connected ({}). Only one at a time is supported: unplug the others.",
+                "More than one Elektron device is connected ({}). Click to choose which one to use.",
                 names.join(", ")
             )),
             Presence::Off => Some(
@@ -76,6 +81,33 @@ pub(super) fn set_connection_status(status: Result<String, String>) {
 
 static OFF: AtomicBool = AtomicBool::new(false);
 
+/// The unit picked among several, by MIDI input name. Run-only.
+static PICK: Mutex<Option<String>> = Mutex::new(None);
+
+/// The unit the user picked, if any (and still plugged in at the last scan).
+pub fn picked() -> Option<String> {
+    PICK.lock().ok().and_then(|p| p.clone())
+}
+
+/// Use the unit on input `name` from now on. The caller tells the worker
+/// to drop its current link; the rescan here makes the switch visible this
+/// frame, so the app reloads device tabs as for a swapped unit.
+pub(super) fn pick(name: String) {
+    crate::log::line(format!("device: picked {name}"));
+    if let Ok(mut p) = PICK.lock() {
+        *p = Some(name);
+    }
+    if let Ok(mut s) = CONNECTION.lock() {
+        *s = None;
+    }
+    if !switched_off() {
+        let now = scan();
+        if let Ok(mut s) = STATE.lock() {
+            *s = now;
+        }
+    }
+}
+
 /// Every MIDI port name seen by the last scan, for the About box.
 #[derive(Clone, Default)]
 pub struct MidiPorts {
@@ -83,6 +115,9 @@ pub struct MidiPorts {
     pub outputs: Vec<String>,
     /// The input and output the device worker has open, if any.
     pub claimed: Option<(String, String)>,
+    /// Elektron-looking inputs, one per unit; each pairs with the output of
+    /// the same name (`Conn::open_port`).
+    pub devices: Vec<String>,
 }
 
 static PORTS: Mutex<(Vec<String>, Vec<String>)> = Mutex::new((Vec::new(), Vec::new()));
@@ -92,7 +127,11 @@ static CLAIMED: Mutex<Option<(String, String)>> = Mutex::new(None);
 /// and the ones in use.
 pub fn midi_ports() -> MidiPorts {
     let (inputs, outputs) = PORTS.lock().map(|p| p.clone()).unwrap_or_default();
+    let mut devices: Vec<String> = inputs.iter().filter(|n| super::conn::elektron_port(n)).cloned().collect();
+    devices.sort();
+    devices.dedup();
     MidiPorts {
+        devices,
         inputs,
         outputs,
         claimed: CLAIMED.lock().ok().and_then(|c| c.clone()),
@@ -187,6 +226,14 @@ fn scan() -> Presence {
     }
     names.sort();
     names.dedup();
+    if let Ok(mut pick) = PICK.lock() {
+        match pick.as_ref() {
+            Some(p) if names.contains(p) => return Presence::One(p.clone()),
+            // Unplugged: forget it, so the units left are handled as usual.
+            Some(_) => *pick = None,
+            None => {}
+        }
+    }
     match names.len() {
         0 => Presence::Absent,
         1 => Presence::One(names.remove(0)),

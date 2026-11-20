@@ -17,7 +17,7 @@ mod conn;
 mod elek;
 pub use elek::{file, library, machines, patterns, presets, preset_file, Cell, DumpMsg, ElekCmd, ElekEv, ElekProject, PatState, PoolEntry, ReadCtl, ReadFirst, SavedProject};
 mod presence;
-pub use presence::{MidiPorts, Presence, connection_status, midi_ports, presence, start as watch_presence, switched_off};
+pub use presence::{MidiPorts, Presence, connection_status, midi_ports, picked, presence, start as watch_presence, switched_off};
 mod proto;
 pub(crate) mod sample;
 mod transfer;
@@ -103,6 +103,8 @@ enum Cmd {
     Elek(ElekCmd),
     /// Close the MIDI ports (the device was switched off).
     Release,
+    /// Drop the link quietly; the next request opens the picked unit.
+    Repick,
 }
 
 pub struct Device {
@@ -153,6 +155,14 @@ impl Device {
         if off {
             let _ = self.tx.send(Cmd::Release);
         }
+    }
+
+    /// Use the unit on MIDI input `name` (one of [`MidiPorts::devices`])
+    /// for the rest of this run. Call only while no job runs: a job parks
+    /// this until it is done.
+    pub fn pick(&self, name: String) {
+        let _ = self.tx.send(Cmd::Repick);
+        presence::pick(name);
     }
 }
 

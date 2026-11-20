@@ -223,9 +223,9 @@ pub(super) fn slot_pane(ui: &mut egui::Ui, st: &mut ElekState, side: usize) {
             RowAct::Click(s, m) => {
                 st.active = side;
                 st.click(s, m);
-                if st.preview && !m.shift && !m.command {
+                if (st.preview || st.open_on_click) && !m.shift && !m.command {
                     if let Some(k) = st.key_at(s) {
-                        st.want_local = Some((k, false));
+                        st.want_local = Some((k, st.open_on_click));
                     }
                 }
             }
@@ -439,11 +439,13 @@ fn slot_row(ui: &mut egui::Ui, st: &ElekState, slot: usize, acts: &mut Vec<RowAc
         )),
         None => resp,
     };
-    // With preview on, the first click of a double-click already played it.
-    if resp.clicked() && !(st.preview && resp.double_clicked()) {
+    // With preview / open on click, the first click of a double-click already
+    // played or opened it.
+    let on_click = st.preview || st.open_on_click;
+    if resp.clicked() && !(on_click && resp.double_clicked()) {
         acts.push(RowAct::Click(slot, ui.input(|i| i.modifiers)));
     }
-    if resp.double_clicked() && !st.preview && !e.is_empty() {
+    if resp.double_clicked() && !on_click && !e.is_empty() {
         acts.push(RowAct::Local(e.key(), false));
     }
     if resp.drag_started() {

@@ -353,14 +353,16 @@ impl App {
     pub(super) fn toolbar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             let idle = self.active_jobs.is_empty();
-            if let Some(crate::ui::infobox::AboutIntent::ResetState) =
-                crate::ui::infobox::show(ui, crate::device::midi_ports, idle)
-            {
-                // Closing asks about unsaved edits first; `save` then
-                // removes the state and `on_exit` starts the app again.
-                self.reset_state = true;
-                self.relaunch = true;
-                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+            match crate::ui::infobox::show(ui, crate::device::midi_ports, idle) {
+                Some(crate::ui::infobox::AboutIntent::ResetState) => {
+                    // Closing asks about unsaved edits first; `save` then
+                    // removes the state and `on_exit` starts the app again.
+                    self.reset_state = true;
+                    self.relaunch = true;
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                Some(crate::ui::infobox::AboutIntent::PickDevice(name)) => self.device.pick(name),
+                None => {}
             }
 
             if self.build_watch.ready() {

@@ -680,6 +680,26 @@ pub fn always_show_scrollbar(ui: &mut egui::Ui) {
 /// Text size for the geek control rows (`tiny_pick`) and readouts.
 pub const TINY: f32 = 9.0;
 
+/// Body and monospace size for dense readout panels (editor Stats), relative
+/// to the normal sizes.
+pub const READOUT_SCALE: f32 = 0.85;
+
+/// Runs `add` with body, monospace and button text scaled by
+/// [`READOUT_SCALE`]: for tables of figures that should sit smaller than the
+/// surrounding UI. `.small()` text keeps its own size.
+pub fn readout_text<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    ui.scope(|ui| {
+        let s = ui.style_mut();
+        for ts in [egui::TextStyle::Body, egui::TextStyle::Monospace, egui::TextStyle::Button] {
+            if let Some(f) = s.text_styles.get_mut(&ts) {
+                f.size *= READOUT_SCALE;
+            }
+        }
+        add(ui)
+    })
+    .inner
+}
+
 /// A row of [`tiny_pick`]s: tight spacing, small row height.
 pub fn tiny_row<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     ui.horizontal(|ui| {
