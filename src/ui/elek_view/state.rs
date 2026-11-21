@@ -129,7 +129,10 @@ impl ElekState {
     /// Drops the loaded project, back to the project picker.
     pub(crate) fn close_project(&mut self) {
         self.project = None;
+        // Copied patterns stay, to paste into the next project.
+        let xclip = self.proj.xclip.take();
         self.proj = Default::default();
+        self.proj.xclip = xclip;
         self.expect_patterns = None;
         self.expect_sounds = None;
         self.keep_blank.clear();

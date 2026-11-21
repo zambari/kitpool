@@ -106,7 +106,7 @@ impl LibraryView {
         sounds_changed(&self.sounds)
     }
 
-    fn cells_mut(&mut self) -> &mut Vec<SoundCell> {
+    pub(crate) fn cells_mut(&mut self) -> &mut Vec<SoundCell> {
         self.sound_undo.push(self.sounds.clone());
         if self.sounds.len() != SOUND_POOL {
             self.sounds = sounds_as_read();
@@ -806,7 +806,8 @@ fn copy_pool_sound(st: &mut ElekState, at: usize, sounds: &[PoolSound]) -> Strin
     let Some(p) = st.project.as_deref() else { return "No project loaded".into() };
     let cell = st.lib.sounds.get(at).cloned().unwrap_or_else(|| SoundCell::as_read(at));
     let track_ok = p.pool_sound_for_track(&cell).map(|_| ());
-    let clip = PoolClip { at, cell, name: s.name.clone(), track_ok };
+    let carry = crate::ui::elek_project_view::carry_sound(st, &cell);
+    let clip = PoolClip { at, cell, name: s.name.clone(), track_ok, carry };
     let msg = match &clip.track_ok {
         Ok(()) => format!("Copied {}: ⌘V on Pool, a slot on Presets, or selected tracks on Patterns", clip.desc()),
         Err(e) => format!("Copied {} (for the pool only; not onto tracks: {e})", clip.desc()),
@@ -928,7 +929,9 @@ pub(crate) fn prepare_sound_paste(st: &ElekState, clip: &PoolClip) -> Result<(So
         let p = st.project.as_deref().ok_or("No project loaded")?;
         p.accepts_preset(*model, data)?;
         let mut translated = data.clone();
-        if let Some(key) = crate::device::presets::sample_key(*model, data) {
+        // A sound carried over from another project may have no file ID of
+        // its own: its sample's key came along.
+        if let Some(key) = crate::device::presets::sample_key(*model, data).or(clip.carry.as_ref().and_then(|c| c.1)) {
             let old = (1..st.order.len()).map(|pos| st.order[pos])
                 .find(|&old| { let e = st.entry(old as usize); !e.is_empty() && e.key() == key });
             let slot = if let Some(old) = old { old as usize } else {

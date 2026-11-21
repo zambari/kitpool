@@ -810,6 +810,19 @@ impl ElekProject {
         Ok(refs.iter().filter_map(|r| r.get(data)).filter(|&s| s > 0).collect())
     }
 
+    /// Pool slots tracks `tracks` of a pattern payload point at: their kit
+    /// sounds (`sound`) and their sample locks (`events`).
+    pub fn track_slots(&self, data: &[u8], tracks: &std::collections::BTreeSet<u8>, events: bool, sound: bool) -> Result<std::collections::BTreeSet<usize>, String> {
+        let refs = self.payload_refs(0, data)?;
+        Ok(refs
+            .iter()
+            .filter(|r| tracks.contains(&r.track))
+            .filter(|r| if matches!(r.enc, Enc::LockHi | Enc::Lock16) { events } else { sound })
+            .filter_map(|r| r.get(data))
+            .filter(|&s| s > 0)
+            .collect())
+    }
+
     fn payload_refs(&self, mi: usize, data: &[u8]) -> Result<Vec<SlotRef>, String> {
         let m = DumpMsg { kind: PATTERN_KIT, index: 0, raw: Vec::new(), data: data.to_vec() };
         let mut scan = Scan::default();

@@ -11,6 +11,19 @@ pub struct ProjEd {
     pub(super) sel: BTreeSet<usize>,
     pub(super) cursor: Option<usize>,
     pub(super) clip: Vec<Cell>,
+    /// The copied patterns as they'll go into another project (payloads
+    /// with their samples and sounds), built after the copy from the app's
+    /// state (`xcopy` asks for it). Kept when another project loads, where
+    /// `clip` goes: pasting it matches up its samples and sounds there.
+    pub xclip: Option<crate::device::file::PatternClip>,
+    pub(super) xcopy: Option<Vec<usize>>,
+    /// Copied track events / sounds in the same carry-over form (their
+    /// source pattern, only the samples and sounds those parts use), next
+    /// to `tclip_ev` / `tclip_snd`, which go when another project loads.
+    pub xtrack_ev: Option<XTracks>,
+    pub xtrack_snd: Option<XTracks>,
+    /// A track copy waiting for its carry-over form: `(pattern, tracks, part)`.
+    pub(super) xtcopy: Option<(usize, BTreeSet<u8>, Part)>,
     /// Selected tracks (folded-out rows), all in one pattern, and the last
     /// one clicked (for ⇧click).
     pub(super) tsel_pat: Option<usize>,
@@ -65,12 +78,21 @@ pub struct ProjEd {
 impl ProjEd {
     pub fn reset(&mut self, p: &ElekProject) {
         let (used_only, banks, bytes) = (self.used_only, self.banks, self.bytes);
-        let pool_clip = self.pool_clip.clone().filter(|c| matches!(c.cell.src, SoundSrc::Preset { .. }))
+        // A copied sound goes on as a stand-alone sound (like a preset):
+        // the project it points into is gone.
+        let pool_clip = self.pool_clip.clone()
+            .and_then(|mut c| {
+                if !matches!(c.cell.src, SoundSrc::Preset { .. }) {
+                    c.cell = c.carry.as_ref()?.0.clone();
+                }
+                Some(c)
+            })
             .map(|mut c| {
                 c.track_ok = p.pool_sound_for_track(&c.cell).map(|_| ());
                 c
             });
-        *self = Self { used_only, banks, bytes, pool_clip, ..Self::default() };
+        let (xclip, xtrack_ev, xtrack_snd) = (self.xclip.take(), self.xtrack_ev.take(), self.xtrack_snd.take());
+        *self = Self { used_only, banks, bytes, pool_clip, xclip, xtrack_ev, xtrack_snd, ..Self::default() };
         self.refresh(p);
     }
 
@@ -110,14 +132,57 @@ impl ProjEd {
         self.banks.iter().enumerate().filter(|(_, o)| **o).fold(0, |m, (b, _)| m | 1 << b)
     }
 
-    /// Put pattern `src` (one loaded from a file) into `slot`, as an
-    /// undoable edit.
-    pub fn place_import(&mut self, slot: usize, src: u8) {
-        if slot < self.cells.len() {
-            self.edit(|c| c[slot] = Cell::with_src(src));
-            self.select_only(slot);
-            self.scroll_to = Some(slot);
+    /// Put patterns `srcs` (taken in with `ElekProject::import_pattern`)
+    /// into the slots from `at` on, as one undoable edit. `Err`: why the
+    /// edit was turned down (a bank still loading).
+    pub fn place_imports(&mut self, at: usize, srcs: &[u8]) -> Result<(), String> {
+        let n = srcs.len().min(self.cells.len().saturating_sub(at));
+        if n == 0 {
+            return Err("no slot to paste into".into());
         }
+        self.edit(|c| {
+            for (k, &s) in srcs.iter().take(n).enumerate() {
+                c[at + k] = Cell::with_src(s);
+            }
+        });
+        if let Some(why) = self.refused.take() {
+            return Err(why);
+        }
+        self.clear_tracks();
+        self.sel = (at..at + n).collect();
+        self.cursor = Some(at);
+        self.scroll_to = Some(at);
+        Ok(())
+    }
+
+    /// Put tracks of taken-in patterns into patterns `into`, as one
+    /// undoable edit: the events of `ev_tracks` from `ev`, the sounds of
+    /// `snd_tracks` from `snd`. `Err`: why the edit was turned down.
+    pub fn place_tracks(&mut self, into: &[usize], ev: Option<u8>, ev_tracks: &[u8], snd: Option<u8>, snd_tracks: &[u8]) -> Result<(), String> {
+        self.edit(|cells| {
+            for &i in into {
+                if let Some(src) = ev {
+                    for &t in ev_tracks {
+                        cells[i].set_track(t as usize, Some(src));
+                    }
+                }
+                if let Some(src) = snd {
+                    for &t in snd_tracks {
+                        cells[i].set_sound(t as usize, Some(src));
+                    }
+                }
+            }
+        });
+        match self.refused.take() {
+            Some(why) => Err(why),
+            None => Ok(()),
+        }
+    }
+
+    /// Something is copied to paste as whole patterns: from this project,
+    /// or carried over from another one.
+    pub(super) fn pattern_count(&self) -> usize {
+        if self.clip.is_empty() { self.xclip.as_ref().map_or(0, |c| c.pats.len()) } else { self.clip.len() }
     }
 
     /// Pattern slots that differ from the read.

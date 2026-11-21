@@ -7,6 +7,19 @@ pub(super) struct TrackPaste {
     pub(super) into: Vec<usize>,
     pub(super) part: Part,
     pub(super) lost: Vec<String>,
+    /// From another project (`ProjEd::xtrack_ev` / `xtrack_snd`): the app
+    /// does the paste.
+    pub(super) cross: bool,
+}
+
+/// Copied tracks carried over to another project: their source pattern as
+/// edited, with only the samples and sounds the copied parts use.
+#[derive(Clone)]
+pub struct XTracks {
+    pub clip: crate::device::file::PatternClip,
+    pub tracks: Vec<u8>,
+    /// "TRACK 3 of A01", for messages.
+    pub what: String,
 }
 
 /// What of a track is copied or pasted: all of it (pasting: whatever is
@@ -48,11 +61,17 @@ pub struct PoolClip {
     pub name: String,
     /// Whether it can go onto a kit track (`Err`: why not).
     pub track_ok: Result<(), String>,
+    /// The sound as a stand-alone sound struct (like a preset) and the
+    /// +Drive key of its sample, so it can be pasted into another project.
+    /// `None` for presets, which already are.
+    pub carry: Option<(SoundCell, Option<(u32, u32)>)>,
 }
 
 impl PoolClip {
     pub fn desc(&self) -> String {
-        if matches!(self.cell.src, SoundSrc::Preset { .. }) {
+        if self.carry.is_some() && matches!(self.cell.src, SoundSrc::Preset { .. }) {
+            format!("sound “{}” from another project", self.name)
+        } else if matches!(self.cell.src, SoundSrc::Preset { .. }) {
             format!("preset “{}”", self.name)
         } else if let SoundSrc::Track { pattern, track } = self.cell.src {
             format!("sound of T{} in {}", track + 1, patterns::label(pattern as usize))
@@ -68,6 +87,11 @@ impl ProjEd {
         self.tclip_ev = None;
         self.tclip_snd = None;
         self.clip.clear();
+        self.xclip = None;
+        self.xcopy = None;
+        self.xtrack_ev = None;
+        self.xtrack_snd = None;
+        self.xtcopy = None;
         self.pool_clip = None;
     }
 
@@ -96,15 +120,31 @@ impl ProjEd {
     }
 
     pub(super) fn has_tclip(&self) -> bool {
-        self.tclip_ev.is_some() || self.tclip_snd.is_some()
+        self.tclip_ev.is_some() || self.tclip_snd.is_some() || self.xtrack_ev.is_some() || self.xtrack_snd.is_some()
     }
 
     /// Whether `part` has something copied to paste.
     fn can_paste(&self, part: Part) -> bool {
-        match part {
+        let local = match part {
             Part::Track => self.tclip_ev.is_some() && self.tclip_snd.is_some(),
             Part::Sound => self.tclip_snd.is_some(),
             Part::Events => self.tclip_ev.is_some(),
+        };
+        local || !self.local_tclip() && !matches!(self.xclips(part), (None, None))
+    }
+
+    /// Tracks copied in this project (rather than carried over from another).
+    fn local_tclip(&self) -> bool {
+        self.tclip_ev.is_some() || self.tclip_snd.is_some()
+    }
+
+    /// The carried-over copies `part` pastes.
+    fn xclips(&self, part: Part) -> (Option<&XTracks>, Option<&XTracks>) {
+        let ev = self.xtrack_ev.as_ref().filter(|_| part.events());
+        let snd = self.xtrack_snd.as_ref().filter(|_| part.sound());
+        match part {
+            Part::Track if ev.is_none() || snd.is_none() => (None, None),
+            _ => (ev, snd),
         }
     }
 
@@ -124,6 +164,16 @@ pub(super) fn clip_desc(c: &TrackClip, audio: usize) -> String {
 
 /// What pasting `part` would paste: "TRACK 3 of A01", "sound of …", "events of … + sound of …".
 fn tclip_desc(ed: &ProjEd, part: Part, audio: usize) -> String {
+    if !ed.local_tclip() {
+        let from = " from another project";
+        return match ed.xclips(part) {
+            (Some(e), Some(s)) if e.what == s.what => format!("{}{from}", e.what),
+            (Some(e), Some(s)) => format!("events of {} + sound of {}{from}", e.what, s.what),
+            (Some(e), None) => format!("events of {}{from}", e.what),
+            (None, Some(s)) => format!("sound of {}{from}", s.what),
+            (None, None) => "tracks".into(),
+        };
+    }
     match ed.clips(part) {
         (Some(e), Some(s)) if e.tracks == s.tracks && e.from == s.from => clip_desc(e, audio),
         (Some(e), Some(s)) => format!("events of {} + sound of {}", clip_desc(e, audio), clip_desc(s, audio)),
@@ -149,7 +199,16 @@ pub(super) fn copy_tracks(ed: &mut ProjEd, part: Part, audio: usize) -> String {
         Part::Sound => ed.tclip_snd = Some(snd),
         Part::Events => (ed.tclip_ev, ed.tclip_snd) = (Some(ev), None),
     }
+    // Carried-over copies follow the same pattern, once built.
+    match part {
+        Part::Track => (ed.xtrack_ev, ed.xtrack_snd) = (None, None),
+        Part::Sound => ed.xtrack_snd = None,
+        Part::Events => (ed.xtrack_ev, ed.xtrack_snd) = (None, None),
+    }
+    ed.xtcopy = Some((i, ed.tsel.clone(), part));
     ed.clip.clear();
+    ed.xclip = None;
+    ed.xcopy = None;
     ed.pool_clip = None;
     if part == Part::Sound && ed.tsel.len() == 1 {
         let t = *ed.tsel.first().expect("one selected track") as usize;
@@ -162,6 +221,9 @@ pub(super) fn copy_tracks(ed: &mut ProjEd, part: Part, audio: usize) -> String {
 /// when pasting events would overwrite tracks with something on them.
 pub(super) fn paste_tracks(ed: &mut ProjEd, p: &Patterns, into: Vec<usize>, part: Part, audio: usize) -> String {
     let (ev, snd) = ed.clips(part);
+    if ev.is_none() && snd.is_none() && !ed.local_tclip() && !matches!(ed.xclips(part), (None, None)) {
+        return paste_xtracks(ed, p, into, part, audio);
+    }
     if ev.is_none() && snd.is_none() {
         return match part {
             Part::Track => "No tracks copied yet",
@@ -204,9 +266,59 @@ pub(super) fn paste_tracks(ed: &mut ProjEd, p: &Patterns, into: Vec<usize>, part
         apply_tracks(ed, &into, part, audio)
     } else {
         let n = lost.len();
-        ed.confirm = Some(TrackPaste { into, part, lost });
+        ed.confirm = Some(TrackPaste { into, part, lost, cross: false });
         format!("Pasting would overwrite {n} track(s) with trigs on them: confirm or cancel")
     }
+}
+
+/// What pasting carried-over tracks' events into `into` would overwrite.
+fn lost_tracks(ed: &ProjEd, p: &Patterns, into: &[usize], tracks: &[u8], audio: usize) -> Vec<String> {
+    let blank = blank_seq(p);
+    let mut lost = Vec::new();
+    for &i in into {
+        for &t in tracks {
+            let seq = seq_of(p, &ed.cells[i], t as usize, &blank);
+            let (trigs, locks) = (seq.steps.iter().filter(|s| **s == Step::Note).count(), seq.steps.iter().filter(|s| **s == Step::Lock).count());
+            let what = match (trigs, locks) {
+                (0, 0) if seq.locks.is_empty() => continue,
+                (0, 0) => "p-locks".to_owned(),
+                (n, 0) => format!("{n} trig(s)"),
+                (0, l) => format!("{l} lock trig(s)"),
+                (n, l) => format!("{n} trig(s), {l} lock trig(s)"),
+            };
+            lost.push(format!("{} {}: {what}", patterns::label(i), track_name(t as usize, audio)));
+        }
+    }
+    lost
+}
+
+/// Paste tracks copied in another project: asks first like `paste_tracks`,
+/// then the app matches up their samples and sounds (`ElekIntent::PasteTracks`).
+fn paste_xtracks(ed: &mut ProjEd, p: &Patterns, into: Vec<usize>, part: Part, audio: usize) -> String {
+    if into.is_empty() {
+        return "Select a pattern to paste the tracks into".into();
+    }
+    if let Some(why) = p.track_copy_blocked() {
+        return format!("Can't paste tracks: {why}");
+    }
+    let tracks: Vec<u8> = ed.xclips(part).0.map(|c| c.tracks.clone()).unwrap_or_default();
+    let lost = lost_tracks(ed, p, &into, &tracks, audio);
+    if lost.is_empty() {
+        request_xtracks(ed, into, part, audio)
+    } else {
+        let n = lost.len();
+        ed.confirm = Some(TrackPaste { into, part, lost, cross: true });
+        format!("Pasting would overwrite {n} track(s) with trigs on them: confirm or cancel")
+    }
+}
+
+/// Hand a carried-over track paste to the app.
+pub(super) fn request_xtracks(ed: &mut ProjEd, into: Vec<usize>, part: Part, audio: usize) -> String {
+    let (ev, snd) = ed.xclips(part);
+    let (events, sound) = (ev.is_some(), snd.is_some());
+    let msg = format!("Pasting {}: matching its samples and sounds to this project…", tclip_desc(ed, part, audio));
+    ed.want.push(ElekIntent::PasteTracks { into, events, sound });
+    msg
 }
 
 pub(super) fn apply_tracks(ed: &mut ProjEd, into: &[usize], part: Part, audio: usize) -> String {
@@ -242,6 +354,79 @@ pub(super) fn request_sound_paste(ed: &mut ProjEd, i: usize, tracks: &[u8]) -> S
     "Preparing sound paste…".into()
 }
 
+/// Build the copied patterns' carry-over form (`ProjEd::xclip`) once a
+/// pattern copy asked for it, from the project as edited.
+pub(super) fn finish_pattern_copy(st: &mut ElekState) {
+    finish_track_copy(st);
+    let Some(slots) = st.proj.xcopy.take() else { return };
+    let Some(proj) = st.project.as_deref() else { return };
+    let Ok(p) = proj.patterns.as_deref() else { return };
+    let names: Vec<String> = slots.iter().map(|&i| view(p, &st.proj.cells[i]).1).collect();
+    let pool = st.new_pool();
+    match proj.copy_patterns(None, &slots, &names, &st.order, &st.fills, &st.proj.cells, &st.lib.sounds, &pool, &st.names) {
+        Ok(c) => {
+            crate::log::line(format!(
+                "elek-pat: copied {} for other projects: {} sample(s), {} sound(s), {} sound lock(s) without a sound",
+                c.from,
+                c.pats.iter().map(|p| p.samples.len()).sum::<usize>(),
+                c.pats.iter().map(|p| p.sounds.len()).sum::<usize>(),
+                c.lost_sounds
+            ));
+            st.proj.xclip = Some(c);
+        }
+        Err(e) => crate::log::line(format!("elek-pat: copy for other projects failed: {e}")),
+    }
+}
+
+/// Build copied tracks' carry-over form (`ProjEd::xtrack_ev` / `xtrack_snd`).
+fn finish_track_copy(st: &mut ElekState) {
+    let Some((i, tracks, part)) = st.proj.xtcopy.take() else { return };
+    let Some(proj) = st.project.as_deref() else { return };
+    let Ok(p) = proj.patterns.as_deref() else { return };
+    let audio = proj.model.kit_tracks();
+    let name = view(p, &st.proj.cells[i]).1;
+    let pool = st.new_pool();
+    let only = Some((&tracks, part.events(), part.sound()));
+    match proj.copy_patterns(only, &[i], &[name], &st.order, &st.fills, &st.proj.cells, &st.lib.sounds, &pool, &st.names) {
+        Ok(clip) => {
+            let ts: Vec<u8> = tracks.iter().copied().collect();
+            let what = match ts.as_slice() {
+                [t] => format!("{} of {}", track_name(*t as usize, audio), patterns::label(i)),
+                _ => format!("{} tracks of {}", ts.len(), patterns::label(i)),
+            };
+            crate::log::line(format!(
+                "elek-pat: copied {what} for other projects: {} sample(s), {} sound(s)",
+                clip.pats.iter().map(|p| p.samples.len()).sum::<usize>(),
+                clip.pats.iter().map(|p| p.sounds.len()).sum::<usize>()
+            ));
+            let x = XTracks { clip, tracks: ts, what };
+            match part {
+                Part::Track => (st.proj.xtrack_ev, st.proj.xtrack_snd) = (Some(x.clone()), Some(x)),
+                Part::Sound => st.proj.xtrack_snd = Some(x),
+                Part::Events => st.proj.xtrack_ev = Some(x),
+            }
+        }
+        Err(e) => crate::log::line(format!("elek-pat: track copy for other projects failed: {e}")),
+    }
+}
+
+/// A copied sound as a stand-alone sound struct, with the +Drive key of the
+/// sample it plays, for `PoolClip::carry`. `None` for presets (already
+/// stand-alone) or when it can't be read.
+pub(crate) fn carry_sound(st: &ElekState, cell: &SoundCell) -> Option<(SoundCell, Option<(u32, u32)>)> {
+    if matches!(cell.src, SoundSrc::Preset { .. }) {
+        return None;
+    }
+    let p = st.project.as_deref()?;
+    let data = p.copied_sound_data(cell)?;
+    let key = crate::device::presets::sample_key(p.model, &data).or_else(|| {
+        let slot = crate::device::library::parse_sound(p.model, 0, &data).slot;
+        let e = st.entry(slot);
+        (slot > 0 && !e.is_empty()).then(|| e.key())
+    });
+    Some((SoundCell { src: SoundSrc::Preset { model: p.model, data }, name: None, tags: None }, key))
+}
+
 /// Finish sound actions with access to the sample pool, shared by all three pages.
 pub(super) fn finish_sound_actions(st: &mut ElekState, ctx: &egui::Context) {
     if let Some((i, t)) = st.proj.sound_copy.take() {
@@ -252,7 +437,8 @@ pub(super) fn finish_sound_actions(st: &mut ElekState, ctx: &egui::Context) {
                 src: SoundSrc::Track { pattern, track: t as u8 }, name: None, tags: None,
             })).ok_or("This track has no sound to copy")?;
             let sound = proj.pool_sound_for_track(&cell)?;
-            Ok::<_, String>(PoolClip { at: match cell.src { SoundSrc::Read(o) => o as usize, _ => 0 }, cell, name: sound.name, track_ok: Ok(()) })
+            let carry = carry_sound(st, &cell);
+            Ok::<_, String>(PoolClip { at: match cell.src { SoundSrc::Read(o) => o as usize, _ => 0 }, cell, name: sound.name, track_ok: Ok(()), carry })
         })();
         match result {
             Ok(clip) => {

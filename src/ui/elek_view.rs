@@ -237,6 +237,11 @@ pub enum ElekIntent {
     /// `SaveProject`) / load one into it.
     SavePattern(usize, String, bool),
     LoadPattern(usize),
+    /// Paste patterns copied in another project (`ProjEd::xclip`) from this slot on.
+    PastePatterns(usize),
+    /// Paste tracks copied in another project (`ProjEd::xtrack_ev` /
+    /// `xtrack_snd`) into these patterns: their events and / or sounds.
+    PasteTracks { into: Vec<usize>, events: bool, sound: bool },
     /// Read the project's sound pool (Pool page).
     ReadSounds,
 }

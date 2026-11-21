@@ -166,11 +166,30 @@ pub struct PatternFile {
     data: String,
 }
 
-/// A pattern read from a file.
+/// A pattern read from a file, or copied for pasting into another project.
+#[derive(Clone)]
 pub struct LoadedPattern {
     pub name: String,
     pub data: Vec<u8>,
     pub samples: Vec<SampleRef>,
+    /// The pool sounds its sound locks play: `(lock value, sound struct)`,
+    /// the sound's sample slot numbered like `samples`. Empty from files
+    /// (their sound locks are cleared on load).
+    pub sounds: Vec<(u8, Vec<u8>)>,
+}
+
+/// Patterns copied on the Patterns page, kept in memory so they can be
+/// pasted into whatever project is loaded next: a pattern file without the
+/// file, plus the pool sounds the sound locks play. Pattern payloads point
+/// at samples and sounds by slot only, so pasting matches them up again.
+#[derive(Clone)]
+pub struct PatternClip {
+    pub model: Model,
+    /// Where they were copied from, for messages ("A01", "3 patterns from A01").
+    pub from: String,
+    pub pats: Vec<LoadedPattern>,
+    /// Sound locks whose pool sound couldn't be taken along (sound pool not read).
+    pub lost_sounds: usize,
 }
 
 fn head(format: &str, model: Model, structs: String) -> Head {
@@ -323,7 +342,64 @@ impl ElekProject {
             return Err(format!("it's a {} pattern; this project is for the {}", model.name(), self.model.name()));
         }
         let data = b64::decode(&f.data).ok_or("bad pattern data")?;
-        Ok(LoadedPattern { name: f.name, data, samples: f.samples })
+        Ok(LoadedPattern { name: f.name, data, samples: f.samples, sounds: Vec::new() })
+    }
+
+    /// The patterns in `slots` as edited (named `names`), to paste into
+    /// another project: each with the files its samples point at and the
+    /// pool sounds its sound locks play. `pool` as for `project_file`.
+    /// `only`: copied tracks `(tracks, events, sound)`, so only the samples
+    /// and sounds those parts of those tracks use are carried.
+    #[allow(clippy::too_many_arguments)]
+    pub fn copy_patterns(
+        &self,
+        only: Option<(&std::collections::BTreeSet<u8>, bool, bool)>,
+        slots: &[usize],
+        pat_names: &[String],
+        order: &[u16],
+        fills: &HashMap<u16, PoolEntry>,
+        cells: &[Cell],
+        sounds: &[super::library::SoundCell],
+        pool: &[PoolEntry],
+        names: &HashMap<(u32, u32), String>,
+    ) -> Result<PatternClip, String> {
+        let pats = self.patterns.as_ref().map_err(|e| e.clone())?;
+        let (pre, data) = self.new_data_parts(order, fills, cells, sounds);
+        let mut out = Vec::new();
+        let mut lost_sounds = 0;
+        for (&slot, name) in slots.iter().zip(pat_names) {
+            let mi = pats.msg_of(slot).ok_or_else(|| format!("{} isn't loaded", patterns::label(slot)))?;
+            let d = data[mi].clone().unwrap_or_else(|| self.msgs[mi].data.clone());
+            let mut used = match only {
+                Some((ts, events, sound)) => self.track_slots(&d, ts, events, sound)?,
+                None => self.payload_slots(&d)?,
+            };
+            let locks = match only {
+                Some((ts, true, _)) => self.track_sound_locks(&d, Some(ts)),
+                Some(_) => Default::default(),
+                None => self.payload_sound_locks(&d),
+            };
+            let mut snds = Vec::new();
+            for v in locks {
+                match self.sound_want(sounds, v as usize, &pre) {
+                    Some(s) => {
+                        let slot = super::library::parse_sound(self.model, 0, &s).slot;
+                        if slot > 0 {
+                            used.insert(slot);
+                        }
+                        snds.push((v, s));
+                    }
+                    None => lost_sounds += 1,
+                }
+            }
+            out.push(LoadedPattern { name: name.clone(), data: d, samples: samples(pool, used.into_iter(), names), sounds: snds });
+        }
+        let from = match slots {
+            [s] => patterns::label(*s),
+            [s, ..] => format!("{} patterns from {}", slots.len(), patterns::label(*s)),
+            [] => return Err("nothing selected".into()),
+        };
+        Ok(PatternClip { model: self.model, from, pats: out, lost_sounds })
     }
 }
 

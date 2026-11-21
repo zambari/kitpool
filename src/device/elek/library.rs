@@ -172,13 +172,28 @@ impl ElekProject {
 
     /// Byte offsets of every sound-lock step in a pattern payload.
     fn lock_spots(&self, d: &[u8]) -> Vec<usize> {
+        self.track_lock_spots(d).into_iter().map(|(_, at)| at).collect()
+    }
+
+    /// `lock_spots` with the track each belongs to.
+    fn track_lock_spots(&self, d: &[u8]) -> Vec<(u8, usize)> {
         let m = self.model;
         let Some(pv) = be32(d, 0) else { return Vec::new() };
         let (Some(off), Some(plocks)) = (sound_lock_at(m, pv), pattern_plocks(m, pv)) else { return Vec::new() };
         let stride = patterns::track_stride(m, pv, plocks);
         (0..16)
-            .flat_map(|t| (0..m.steps()).map(move |s| 4 + t * stride + off + s))
-            .filter(|&at| at < d.len())
+            .flat_map(|t| (0..m.steps()).map(move |s| (t as u8, 4 + t * stride + off + s)))
+            .filter(|&(_, at)| at < d.len())
+            .collect()
+    }
+
+    /// Pool sounds the sound locks of `tracks` (all: `None`) point at.
+    pub fn track_sound_locks(&self, d: &[u8], tracks: Option<&std::collections::BTreeSet<u8>>) -> std::collections::BTreeSet<u8> {
+        self.track_lock_spots(d)
+            .into_iter()
+            .filter(|(t, _)| tracks.is_none_or(|ts| ts.contains(t)))
+            .map(|(_, at)| d[at])
+            .filter(|&v| v != NO_LOCK)
             .collect()
     }
 
@@ -193,6 +208,33 @@ impl ElekProject {
             }
         }
         out
+    }
+
+    /// Pool sounds (as numbered in the payload) a pattern payload's sound locks point at.
+    pub fn payload_sound_locks(&self, d: &[u8]) -> std::collections::BTreeSet<u8> {
+        self.track_sound_locks(d, None)
+    }
+
+    /// Point a pattern payload's sound locks through `map` (pasted from
+    /// another project); locks on sounds not in it are cleared. Returns
+    /// how many locked steps were cleared.
+    pub fn remap_sound_locks(&self, d: &mut [u8], map: &std::collections::HashMap<u8, u8>) -> usize {
+        let mut cleared = 0;
+        for at in self.lock_spots(d) {
+            let v = d[at];
+            if v != NO_LOCK {
+                d[at] = map.get(&v).copied().unwrap_or_else(|| {
+                    cleared += 1;
+                    NO_LOCK
+                });
+            }
+        }
+        cleared
+    }
+
+    /// Pool sound `i` as read (`None`: empty or not read).
+    pub fn sound_as_read(&self, i: usize) -> Option<Vec<u8>> {
+        self.sound_now(i).map(<[u8]>::to_vec)
     }
 
     /// Sound locks can be renumbered in this project's patterns.

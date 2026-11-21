@@ -64,7 +64,12 @@ pub(super) fn copy(ed: &mut ProjEd) -> String {
     ed.tclip_ev = None;
     ed.tclip_snd = None;
     ed.pool_clip = None;
-    format!("Copied {} pattern(s); select a slot and paste (⌘V)", ed.clip.len())
+    ed.xclip = None;
+    ed.xtrack_ev = None;
+    ed.xtrack_snd = None;
+    ed.xtcopy = None;
+    ed.xcopy = (!t.is_empty()).then_some(t);
+    format!("Copied {} pattern(s); select a slot and paste (⌘V), here or in another project", ed.clip.len())
 }
 
 pub(super) fn paste(ed: &mut ProjEd) -> String {
@@ -72,6 +77,12 @@ pub(super) fn paste(ed: &mut ProjEd) -> String {
         return "Select where to paste first".into();
     };
     if ed.clip.is_empty() {
+        // Copied in another project: the app matches up samples and sounds.
+        if let Some(c) = &ed.xclip {
+            let msg = format!("Pasting {} at {}: matching its samples and sounds to this project…", c.from, patterns::label(at));
+            ed.want.push(ElekIntent::PastePatterns(at));
+            return msg;
+        }
         return "Nothing copied yet".into();
     }
     let clip = ed.clip.clone();

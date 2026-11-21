@@ -43,14 +43,15 @@ mod sounds;
 mod state;
 mod steps;
 
-pub use clipboard::PoolClip;
+pub use clipboard::{PoolClip, XTracks};
+pub(crate) use clipboard::carry_sound;
 pub(crate) use clipboard::paste_sound_on_tracks;
 pub use controls::show;
 pub(crate) use controls::view_tools;
 pub use state::ProjEd;
 
 use clipboard::{TrackPaste, TrackClip, Part, copy_tracks,
-    paste_tracks, apply_tracks, request_sound_paste, pool_cell_sound, finish_sound_actions,
+    paste_tracks, apply_tracks, request_sound_paste, pool_cell_sound, finish_sound_actions, finish_pattern_copy, request_xtracks,
     copy_items, paste_items, confirm_tracks};
 use edit::{drop_sel, clear, copy, paste, pack, rename};
 use list::{list, ListActions};

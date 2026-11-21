@@ -108,6 +108,8 @@ impl App {
                 ElekIntent::LoadProject => self.load_project_file(),
                 ElekIntent::SavePattern(slot, name, bundle) => self.save_pattern_file(slot, &name, bundle),
                 ElekIntent::LoadPattern(slot) => self.load_pattern_file(slot),
+                ElekIntent::PastePatterns(at) => self.paste_pattern_clip(at),
+                ElekIntent::PasteTracks { into, events, sound } => self.paste_track_clip(into, events, sound),
                 ElekIntent::Local(k, open) => self.elek_local(k, open),
                 ElekIntent::UpdateChanged(keys) => self.update_changed(keys),
                 ElekIntent::ShowOriginal(k) => match self.links.original(k.0, k.1).map(|l| (l.local.clone(), l.fresh())) {

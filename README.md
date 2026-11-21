@@ -223,6 +223,14 @@ notices when the device is plugged in or out and reconnects on its own.
   dropping to copy), or **copy and paste** them (⌘C / ⌘V), within a bank or
   between banks. **Clear** (⌫) empties a pattern. Songs that refer to a
   moved pattern aren't updated yet.
+- **Paste into another project**: copied patterns, tracks (whole, events
+  only or sound only) and single sounds stay on the clipboard when you
+  load another project. Pasting there matches their samples to that
+  project's pool by +Drive hash and puts missing ones into empty slots
+  (found on the device, or uploaded from a local copy if the file is
+  gone). Sound-locked pool sounds are matched or added to empty pool
+  sounds the same way. A track copy brings only the samples and sounds
+  those tracks use. Push to send.
 - **Pack bank** moves a bank's used patterns to the front, in order.
 - **Rename** a pattern with ⏎ or a double-click; this sets both the
   pattern name and its kit name. With several selected, *Rename all* names

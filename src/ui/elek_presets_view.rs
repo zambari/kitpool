@@ -1209,7 +1209,7 @@ pub(crate) fn finish_copy(st: &mut ElekState, ctx: &egui::Context) {
     let track_ok = st.project.as_deref().ok_or_else(|| "No project loaded".to_owned())
         .and_then(|p| p.pool_sound_for_track(&cell).map(|_| ()));
     st.proj.set_pool_clip(crate::ui::elek_project_view::PoolClip {
-        at: 0, cell, name: preset.sound.name, track_ok,
+        at: 0, cell, name: preset.sound.name, track_ok, carry: None,
     });
     st.presets.copy_pending = None;
     let msg = format!("Copied preset {}:{:03}. Paste into Pool, Presets, or an audio track on Patterns; Push saves the edit", loc.bank, loc.slot);

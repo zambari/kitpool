@@ -56,7 +56,11 @@ pub fn show(ui: &mut egui::Ui, st: &mut ElekState) -> Vec<ElekIntent> {
     if let Some(c) = &st.proj.confirm {
         if let Some(yes) = confirm_tracks(ui.ctx(), c) {
             let c = st.proj.confirm.take().expect("checked above");
-            st.status = if yes && !busy { apply_tracks(&mut st.proj, &c.into, c.part, audio) } else { "Paste cancelled".into() };
+            st.status = match (yes && !busy, c.cross) {
+                (true, false) => apply_tracks(&mut st.proj, &c.into, c.part, audio),
+                (true, true) => request_xtracks(&mut st.proj, c.into, c.part, audio),
+                (false, _) => "Paste cancelled".into(),
+            };
         }
     }
     keys(ui.ctx(), st);
@@ -67,6 +71,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut ElekState) -> Vec<ElekIntent> {
             .small(),
     );
     list(ui, st, busy);
+    finish_pattern_copy(st);
     finish_sound_actions(st, ui.ctx());
     out.append(&mut st.proj.want);
     if let Some(m) = st.proj.refused.take() {
@@ -229,7 +234,12 @@ fn action_bar(ui: &mut egui::Ui, st: &mut ElekState, busy: bool) {
         if ui.add_enabled(any, egui::Button::new("Copy")).clicked() {
             status = Some(copy(ed));
         }
-        if ui.add_enabled(editable && !ed.clip.is_empty(), egui::Button::new(format!("Paste ({})", ed.clip.len()))).clicked() {
+        let n = ed.pattern_count();
+        let tip = match &ed.xclip {
+            Some(c) if ed.clip.is_empty() => format!("{} from another project: its samples are matched to this pool by +Drive hash, missing ones go into empty slots", c.from),
+            _ => "Paste the copied patterns from the selected slot on".to_owned(),
+        };
+        if ui.add_enabled(editable && n > 0, egui::Button::new(format!("Paste ({n})"))).on_hover_text(tip).clicked() {
             status = Some(paste(ed));
         }
         if ed.has_tclip() {

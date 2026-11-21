@@ -196,7 +196,7 @@ pub(super) fn pattern_menu(ui: &mut egui::Ui, ed: &mut ProjEd, p: &Patterns, men
         actions.status = Some(copy(ed));
         ui.close();
     }
-    if ui.add_enabled(editable && !ed.clip.is_empty(), egui::Button::new("Paste here  ⌘V")).clicked() {
+    if ui.add_enabled(editable && ed.pattern_count() > 0, egui::Button::new("Paste here  ⌘V")).clicked() {
         actions.status = Some(paste(ed));
         ui.close();
     }

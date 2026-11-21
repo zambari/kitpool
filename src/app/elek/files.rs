@@ -2,6 +2,22 @@
 
 use super::*;
 
+/// Patterns taken into the project from a file or another project, before
+/// their samples are placed (`App::take_in_patterns`).
+#[derive(Default)]
+struct TakeIn {
+    /// Their source indexes, for `Cell`s.
+    idxs: Vec<u8>,
+    found: usize,
+    /// Samples to place: `(empty slot as read, the sample, a local copy)`.
+    lookup: Vec<(u16, file::SampleRef, Option<PathBuf>)>,
+    no_room: Vec<String>,
+    sounds_found: usize,
+    new_sounds: Vec<(usize, crate::device::library::SoundCell)>,
+    sounds_no_room: usize,
+    cleared: usize,
+}
+
 impl App {
     /// Where project and pattern files go by default.
     pub(super) fn elek_files_dir(sub: &str) -> Option<PathBuf> {
@@ -199,18 +215,18 @@ impl App {
         PathBuf::from("/imported").join(stem.trim())
     }
 
-    /// Start placing `slots` (`(slot as read, its sample)`): each is looked
-    /// up on the device by hash, and uploaded from the bundle if missing.
-    /// `verify`: the slot already points at the file (a loaded project);
-    /// otherwise it's an empty slot to fill.
-    pub(super) fn start_import(&mut self, what: String, json: &Path, slots: Vec<(u16, file::SampleRef)>, verify: bool) {
-        let dir = Self::import_dir(json);
+    /// Start placing `slots` (`(slot as read, its sample, a local copy to
+    /// upload if the device lacks it)`): each is looked up on the device by
+    /// hash, and uploaded into `dir` if missing. `verify`: the slot already
+    /// points at the file (a loaded project); otherwise it's an empty slot
+    /// to fill.
+    pub(super) fn start_import(&mut self, what: String, dir: PathBuf, slots: Vec<(u16, file::SampleRef, Option<PathBuf>)>, verify: bool) {
         let mut imp = Import { what, ..Default::default() };
-        for (slot, s) in slots {
+        for (slot, s, file) in slots {
             let Some(key) = s.key() else { continue };
             let name = s.short();
             self.elek.filling.insert(slot, name.clone());
-            imp.slots.insert(slot, ImportSlot { name, key, file: s.bundled(json), dir: dir.clone(), stage: Stage::Hash, verify });
+            imp.slots.insert(slot, ImportSlot { name, key, file, dir: dir.clone(), stage: Stage::Hash, verify });
             self.device.elek(ElekCmd::Resolve { slot, hash: key.0, lens: vec![key.1] });
         }
         let empty = imp.slots.is_empty();
@@ -359,13 +375,16 @@ impl App {
                 self.refresh_elek_links();
                 let file_name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                 let bundled = samples.iter().filter(|s| s.bundled(&path).is_some()).count();
-                let slots: Vec<_> = samples.into_iter().filter(|s| s.slot > 0 && s.slot < n).map(|s| (s.slot as u16, s)).collect();
+                let slots: Vec<_> = samples.into_iter().filter(|s| s.slot > 0 && s.slot < n).map(|s| {
+                    let file = s.bundled(&path);
+                    (s.slot as u16, s, file)
+                }).collect();
                 let what = format!(
                     "Opened {file_name}{}. It's only here for now: Push sends the whole project into the device's memory",
                     if bundled > 0 { format!(" ({bundled} bundled sample(s))") } else { String::new() }
                 );
                 self.elek.status = format!("{what}. Checking its samples on the device…");
-                self.start_import(what, &path, slots, true);
+                self.start_import(what, Self::import_dir(&path), slots, true);
             }
             Err(e) => {
                 self.elek.status = format!("Couldn't open the project: {e}");
@@ -391,66 +410,288 @@ impl App {
                 return;
             }
         };
-        let st = &self.elek;
-        let n = p.pool.len();
-        let mut map = HashMap::new();
-        let mut taken = HashSet::new();
-        let (mut found, mut lookup, mut no_room) = (0, Vec::<(u16, file::SampleRef)>::new(), Vec::new());
-        for s in &lp.samples {
-            let Some(k) = s.key() else { continue };
-            // Already in the pool.
-            if let Some(o) = (1..n).find(|&o| {
-                let e = st.entry(o);
-                !e.is_empty() && e.key() == k
-            }) {
-                map.insert(s.slot, o);
-                found += 1;
-                continue;
-            }
-            // On its way in from this same load.
-            if let Some((o, _)) = lookup.iter().find(|(_, x)| x.key() == Some(k)) {
-                map.insert(s.slot, *o as usize);
-                continue;
-            }
-            // The first empty slot in the order as shown.
-            let free = st.order.iter().skip(1).copied().find(|&o| st.free(o) && !taken.contains(&o));
-            match free {
-                Some(o) => {
-                    taken.insert(o);
-                    map.insert(s.slot, o as usize);
-                    lookup.push((o, s.clone()));
-                }
-                None => no_room.push(s.short()),
-            }
+        let files = lp.samples.iter().filter_map(|s| Some((s.key()?, s.bundled(&path)?))).collect();
+        let what = format!("Loaded \"{}\" into {}", lp.name, crate::device::patterns::label(slot));
+        crate::log::line(format!("elek-pat: loading {} into {}", path.display(), crate::device::patterns::label(slot)));
+        self.place_patterns(slot, vec![lp], files, Self::import_dir(&path), what, false);
+    }
+
+    /// Paste patterns copied in another project (`ProjEd::xclip`) from
+    /// `at` on. Samples the device lacks (deleted since the copy) are
+    /// uploaded from a local copy when there is one.
+    pub(super) fn paste_pattern_clip(&mut self, at: usize) {
+        if self.importing() {
+            self.elek.status = "Still placing samples from the last paste or load; try again once it's done".into();
+            return;
         }
-        let Some(p) = self.elek.project.as_mut() else { return };
-        let idx = match p.import_pattern(lp.data, &map) {
-            Ok(i) => i,
-            Err(e) => {
-                self.elek.status = format!("Couldn't load the pattern: {e}");
-                return;
-            }
+        if self.elek.edit_locked() {
+            self.elek.status = "The device is busy; paste once it's done".into();
+            return;
+        }
+        let Some(c) = self.elek.proj.xclip.clone() else { return };
+        let Some(p) = &self.elek.project else { return };
+        if c.model != p.model {
+            self.elek.status = format!("Can't paste: {} was copied from a {} project; this one is for the {}", c.from, c.model.name(), p.model.name());
+            return;
+        }
+        let files = c
+            .pats
+            .iter()
+            .flat_map(|lp| &lp.samples)
+            .filter_map(|s| {
+                let k = s.key()?;
+                Some((k, self.links.local(k.0, k.1)?.local.clone()))
+            })
+            .collect();
+        let n = c.pats.len().min(crate::device::patterns::PATTERNS - at);
+        let what = match n {
+            1 => format!("Pasted {} into {}", c.from, crate::device::patterns::label(at)),
+            _ => format!("Pasted {} into {}–{}", c.from, crate::device::patterns::label(at), crate::device::patterns::label(at + n - 1)),
         };
-        let label = crate::device::patterns::label(slot);
+        let mut what = what;
+        if c.lost_sounds > 0 {
+            what.push_str(&format!(" ({} sound lock(s) dropped: the source's sound pool wasn't read)", c.lost_sounds));
+        }
+        crate::log::line(format!("elek-pat: pasting {} from another project at {}", c.from, crate::device::patterns::label(at)));
+        self.place_patterns(at, c.pats.into_iter().take(n).collect(), files, PathBuf::from("/imported/pasted"), what, true);
+    }
+
+    /// Put `pats` into the slots from `at` on (see `take_in_patterns`).
+    fn place_patterns(&mut self, at: usize, pats: Vec<file::LoadedPattern>, files: HashMap<Key, PathBuf>, dir: PathBuf, what: String, sounds: bool) {
+        let Some(t) = self.take_in_patterns(&pats, &files, sounds) else { return };
+        if let Err(why) = self.elek.proj.place_imports(at, &t.idxs) {
+            self.elek.status = format!("Couldn't paste: {why}");
+            return;
+        }
+        self.finish_take_in(t, what, dir);
+    }
+
+    /// Paste tracks copied in another project (`ProjEd::xtrack_ev` /
+    /// `xtrack_snd`) into patterns `into`, same track numbers: their events
+    /// (`events`) and / or sounds (`sound`), with samples and sounds matched
+    /// up as for a pattern paste.
+    pub(super) fn paste_track_clip(&mut self, into: Vec<usize>, events: bool, sound: bool) {
+        if self.importing() {
+            self.elek.status = "Still placing samples from the last paste or load; try again once it's done".into();
+            return;
+        }
+        if self.elek.edit_locked() {
+            self.elek.status = "The device is busy; paste once it's done".into();
+            return;
+        }
+        let ev = self.elek.proj.xtrack_ev.clone().filter(|_| events);
+        let snd = self.elek.proj.xtrack_snd.clone().filter(|_| sound);
+        let Some(p) = &self.elek.project else { return };
+        if let Some(c) = ev.iter().chain(&snd).find(|c| c.clip.model != p.model) {
+            self.elek.status = format!("Can't paste: {} was copied from a {} project; this one is for the {}", c.what, c.clip.model.name(), p.model.name());
+            return;
+        }
+        // One source pattern per clip; both are the same when a whole track was copied.
+        let same = matches!((&ev, &snd), (Some(e), Some(s)) if e.tracks == s.tracks
+            && e.clip.pats.first().map(|p| &p.data) == s.clip.pats.first().map(|p| &p.data));
+        let mut pats = Vec::new();
+        pats.extend(ev.iter().flat_map(|c| c.clip.pats.first().cloned()));
+        if !same {
+            pats.extend(snd.iter().flat_map(|c| c.clip.pats.first().cloned()));
+        }
+        if pats.is_empty() {
+            return;
+        }
+        let files = pats
+            .iter()
+            .flat_map(|lp| &lp.samples)
+            .filter_map(|s| {
+                let k = s.key()?;
+                Some((k, self.links.local(k.0, k.1)?.local.clone()))
+            })
+            .collect();
+        let Some(t) = self.take_in_patterns(&pats, &files, true) else { return };
+        let ev_idx = ev.as_ref().map(|_| t.idxs[0]);
+        let snd_idx = snd.as_ref().map(|_| if same || ev.is_none() { t.idxs[0] } else { t.idxs[1] });
+        let ev_tracks = ev.as_ref().map(|c| c.tracks.clone()).unwrap_or_default();
+        let snd_tracks = snd.as_ref().map(|c| c.tracks.clone()).unwrap_or_default();
+        if let Err(why) = self.elek.proj.place_tracks(&into, ev_idx, &ev_tracks, snd_idx, &snd_tracks) {
+            self.elek.status = format!("Couldn't paste: {why}");
+            return;
+        }
+        let what = match (&ev, &snd) {
+            (Some(e), Some(_)) if same => e.what.clone(),
+            (Some(e), Some(s)) => format!("events of {} + sound of {}", e.what, s.what),
+            (Some(e), None) => format!("events of {}", e.what),
+            (None, Some(s)) => format!("sound of {}", s.what),
+            (None, None) => "tracks".into(),
+        };
+        let at = match into.as_slice() {
+            [i] => crate::device::patterns::label(*i),
+            _ => format!("{} patterns", into.len()),
+        };
+        crate::log::line(format!("elek-pat: pasting {what} from another project into {at}"));
+        self.finish_take_in(t, format!("Pasted {what} into {at}"), PathBuf::from("/imported/pasted"));
+    }
+
+    /// Take `pats` into the project as hidden sources (not yet in a slot).
+    /// Their samples are matched to this pool by +Drive hash; others get
+    /// empty slots, to be found on the device by hash or else uploaded from
+    /// `files` (`finish_take_in`; push waits). With `sounds` (a paste), pool
+    /// sounds their sound locks play are matched to this sound pool (an
+    /// identical sound) or go into empty pool sounds; locks with no sound to
+    /// play are cleared. Pattern files carry no sounds: their locks are left
+    /// as they are. `None`: refused, with the status set.
+    fn take_in_patterns(&mut self, pats: &[file::LoadedPattern], files: &HashMap<Key, PathBuf>, sounds: bool) -> Option<TakeIn> {
+        use crate::device::library::{self, SoundCell, SoundSrc, SOUND_POOL};
+        let st = &self.elek;
+        let p = st.project.as_ref()?;
+        let n = p.pool.len();
+        let locked = sounds && pats.iter().any(|lp| !p.payload_sound_locks(&lp.data).is_empty());
+        if locked && !(p.sounds_read && p.locks_known()) {
+            self.elek.status = if p.sounds_read {
+                "Can't paste: the copied pattern has sound locks, and this project's sound locks can't be renumbered (unknown pattern layout)".into()
+            } else {
+                "Can't paste yet: what was copied has sound locks, and this project's sound pool hasn't been read. Read it on the Pool page, then paste again".into()
+            };
+            return None;
+        }
+        let cells: Vec<SoundCell> = if st.lib.sounds.len() == SOUND_POOL { st.lib.sounds.clone() } else { library::sounds_as_read() };
+        let mut t = TakeIn::default();
+        let mut taken = HashSet::new();
+        let mut found_keys = HashSet::new();
+        let mut maps = Vec::new();
+        // Per pattern (each may come from another project, numbered its own way).
+        for lp in pats {
+            // Samples: slot in the source → slot as read here.
+            let mut map = HashMap::new();
+            for s in &lp.samples {
+                let Some(k) = s.key() else { continue };
+                // Already in the pool.
+                if let Some(o) = (1..n).find(|&o| {
+                    let e = st.entry(o);
+                    !e.is_empty() && e.key() == k
+                }) {
+                    map.insert(s.slot, o);
+                    if found_keys.insert(k) {
+                        t.found += 1;
+                    }
+                    continue;
+                }
+                // On its way in from this same paste.
+                if let Some((o, _, _)) = t.lookup.iter().find(|(_, x, _)| x.key() == Some(k)) {
+                    map.insert(s.slot, *o as usize);
+                    continue;
+                }
+                // The first empty slot in the order as shown.
+                match st.order.iter().skip(1).copied().find(|&o| st.free(o) && !taken.contains(&o)) {
+                    Some(o) => {
+                        taken.insert(o);
+                        map.insert(s.slot, o as usize);
+                        t.lookup.push((o, s.clone(), files.get(&k).cloned()));
+                    }
+                    None => t.no_room.push(s.short()),
+                }
+            }
+            // Sounds: lock value in the source → pool sound as read here.
+            let mut smap: HashMap<u8, u8> = HashMap::new();
+            if locked {
+                for (v, data) in &lp.sounds {
+                    if smap.contains_key(v) {
+                        continue;
+                    }
+                    let mut d = data.clone();
+                    let s = library::parse_sound(p.model, 0, &d).slot;
+                    if s > 0 {
+                        crate::device::presets::translate_slot(p.model, &mut d, map.get(&s).copied().unwrap_or(0));
+                    }
+                    // The same sound already in this pool, where it was read,
+                    // or added by this paste.
+                    let have = (0..SOUND_POOL)
+                        .find(|&i| cells[i] == SoundCell::as_read(i) && p.sound_as_read(i).as_deref() == Some(&d[..]))
+                        .or_else(|| t.new_sounds.iter().find(|(_, c)| matches!(&c.src, SoundSrc::Preset { data, .. } if *data == d)).map(|(i, _)| *i));
+                    if let Some(i) = have {
+                        smap.insert(*v, i as u8);
+                        t.sounds_found += 1;
+                        continue;
+                    }
+                    // An empty pool sound whose locks point nowhere else.
+                    let free = (0..SOUND_POOL).find(|&i| {
+                        let empty = match cells[i].src {
+                            SoundSrc::Empty => true,
+                            SoundSrc::Read(o) => o as usize == i && p.sound_as_read(i).is_none(),
+                            _ => false,
+                        };
+                        empty
+                            && !t.new_sounds.iter().any(|(j, _)| *j == i)
+                            && !cells.iter().enumerate().any(|(j, c)| j != i && c.src == SoundSrc::Read(i as u8))
+                    });
+                    match free {
+                        Some(i) => {
+                            smap.insert(*v, i as u8);
+                            t.new_sounds.push((i, SoundCell { src: SoundSrc::Preset { model: p.model, data: d }, name: None, tags: None }));
+                        }
+                        None => t.sounds_no_room += 1,
+                    }
+                }
+            }
+            maps.push((map, smap));
+        }
+        // Take the patterns in.
+        let p = self.elek.project.as_mut()?;
+        for (lp, (map, smap)) in pats.iter().zip(&maps) {
+            let mut data = lp.data.clone();
+            if locked {
+                t.cleared += p.remap_sound_locks(&mut data, smap);
+            }
+            match p.import_pattern(data, map) {
+                Ok(i) => t.idxs.push(i),
+                Err(e) => {
+                    self.elek.status = format!("Couldn't paste \"{}\": {e}", lp.name);
+                    return None;
+                }
+            }
+        }
         crate::log::line(format!(
-            "elek-pat: {} loaded into {label}: {found} sample(s) in the pool, {} to place, {} without room; map {map:?}",
-            path.display(),
-            lookup.len(),
-            no_room.len()
+            "elek-pat: took in {} pattern(s): {} sample(s) in the pool, {} to place, {} without room; maps {maps:?}; \
+             sounds {} found, {} added, {} without room, {} locked step(s) cleared",
+            t.idxs.len(),
+            t.found,
+            t.lookup.len(),
+            t.no_room.len(),
+            t.sounds_found,
+            t.new_sounds.len(),
+            t.sounds_no_room,
+            t.cleared
         ));
-        self.elek.proj.place_import(slot, idx);
-        let mut msg = format!("Loaded \"{}\" into {label}", lp.name);
-        if found > 0 {
-            msg.push_str(&format!(" ({found} sample(s) already in the pool)"));
+        Some(t)
+    }
+
+    /// After the taken-in patterns are placed: add their pool sounds, sum
+    /// up in the status line, and start placing their samples.
+    fn finish_take_in(&mut self, t: TakeIn, what: String, dir: PathBuf) {
+        if !t.new_sounds.is_empty() {
+            let cells = self.elek.lib.cells_mut();
+            for (i, c) in &t.new_sounds {
+                cells[*i] = c.clone();
+            }
         }
-        if !no_room.is_empty() {
-            msg.push_str(&format!(". No empty pool slot for {}: those tracks play nothing", no_room.join(", ")));
+        self.elek.lib.patterns_changed();
+        let mut msg = what;
+        if t.found > 0 {
+            msg.push_str(&format!(" ({} sample(s) already in the pool)", t.found));
         }
-        if !lookup.is_empty() {
-            self.elek.status = format!("{msg}. Placing {} sample(s)…", lookup.len());
+        if !t.new_sounds.is_empty() {
+            let at: Vec<String> = t.new_sounds.iter().map(|(i, _)| format!("{:03}", i + 1)).collect();
+            msg.push_str(&format!(". Sound-locked sounds added to the sound pool at {}", at.join(", ")));
+        }
+        if !t.no_room.is_empty() {
+            msg.push_str(&format!(". No empty pool slot for {}: those tracks play nothing", t.no_room.join(", ")));
+        }
+        if t.sounds_no_room > 0 || t.cleared > 0 {
+            msg.push_str(&format!(". No empty pool sound for {} locked sound(s): {} sound-locked step(s) cleared", t.sounds_no_room, t.cleared));
+        }
+        msg.push_str(". Push to send");
+        if !t.lookup.is_empty() {
+            self.elek.status = format!("{msg}. Placing {} sample(s)…", t.lookup.len());
         } else {
             self.elek.status = msg.clone();
         }
-        self.start_import(msg, &path, lookup, false);
+        self.start_import(msg, dir, t.lookup, false);
     }
 }

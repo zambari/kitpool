@@ -82,6 +82,16 @@ control→function tables are in [MAP_full.md](MAP_full.md) (not maintained).
   renumber sound locks in every pattern.
 - DT1 answers `0x63` with kit track sounds, so its sound pool comes only from
   the whole dump.
+- **Copies carry over to another project.** Pattern payloads point at
+  samples and pool sounds by slot only, so each copy also builds a
+  carry-over form after ⌘C (`finish_pattern_copy`): patterns →
+  `ProjEd::xclip`, tracks → `xtrack_ev` / `xtrack_snd` (source pattern,
+  only the copied tracks' samples and sounds), a single sound →
+  `PoolClip::carry` (a preset-like sound plus its sample's key). These
+  survive `ProjEd::reset`; the in-project clips (`clip`, `tclip_*`) win
+  while they exist. Pastes go through `App::take_in_patterns` (shared with
+  "Load pattern here…"): re-match samples by +Drive hash, remap sound locks,
+  import as hidden sources, then place (`place_imports` / `place_tracks`).
 - **One sound clipboard** across Pool, Patterns and Presets (`PoolClip`,
   `ProjEd::set_pool_clip`); the slot clipboard and file clipboard displace each
   other. Copies also put text on the system clipboard, because ⌘V only reaches
