@@ -409,7 +409,8 @@ impl PresetView {
         let mut order: Vec<usize> = (0..banks.len() * 256).collect();
         let sel: Vec<_> = self.sel.iter().copied().collect();
         match action {
-            Edit::Drop(DropTarget::Place(at)) => {
+            // Presets never shift-drop (their plain drop inserts).
+            Edit::Drop(DropTarget::Place(at) | DropTarget::Shift(at)) => {
                 slot_list::place(&mut order, &sel, at, 0);
             }
             Edit::Drop(DropTarget::Insert(at)) => slot_list::insert(&mut order, &sel, at, 0),
@@ -909,7 +910,7 @@ impl Default for PresetView {
 
 pub fn show(ui: &mut egui::Ui, st: &mut ElekState) -> Vec<ElekIntent> {
     let mut out = Vec::new();
-    ui.horizontal(|ui| elek_view::mode_header(ui, st, &mut out));
+    elek_view::mode_header(ui, st, &mut out);
     let present = crate::device::presence().available();
     if present && !st.presets.asked {
         st.presets.asked = true;
@@ -1621,13 +1622,13 @@ fn pane(
             if let Some((row, r)) = hover {
                 let slot_of = |i: usize| rows.get(i).map_or(start + 256, |x| start + x.0 as usize - 1);
                 let row_of = |s: usize| rows.partition_point(|x| start + (x.0 as usize) - 1 < s);
-                let rules = slot_list::DropRules { first: 0, len: banks.len() * 256, insert_default: true };
+                let rules = slot_list::DropRules { first: 0, len: banks.len() * 256, plain: slot_list::PlainDrop::Insert };
                 let sel = &st.presets.sel;
                 let n = sel.len().max(1);
                 let hit = slot_list::RowHit { rect: r, pitch, row, slot_of: &slot_of };
                 let target = slot_list::drop_target_rows(ui, &hit, n, st.presets.grab, &rules);
                 // Locked presets anywhere the drop changes make the push fail.
-                let order = slot_list::preview(rules.len, &sel.iter().copied().collect::<Vec<_>>(), target, 0);
+                let order = slot_list::preview(rules.len, &sel.iter().copied().collect::<Vec<_>>(), target, 0, |_| false);
                 let locked = order.iter().enumerate()
                     .filter(|(i, old)| i != *old && st.presets.locked(&location(banks, *i), full_ops))
                     .count();

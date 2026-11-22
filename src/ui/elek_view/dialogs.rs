@@ -42,6 +42,18 @@ pub(crate) fn finish(ui: &mut egui::Ui, st: &mut ElekState, out: &mut Vec<ElekIn
             }
         }
     }
+    if let Some(r) = st.group_naming.as_mut() {
+        if let Some(ok) = group_name_dialog(ui.ctx(), r) {
+            let (g, slots, name, _) = st.group_naming.take().unwrap_or_default();
+            let name = name.trim().to_owned();
+            if ok {
+                match g {
+                    Some(g) => st.rename_group(g, name),
+                    None => st.new_group(&slots, name),
+                }
+            }
+        }
+    }
     if st.confirm_close {
         if let Some(yes) = confirm_close(ui.ctx(), st.changed()) {
             st.confirm_close = false;
@@ -222,6 +234,43 @@ fn confirm_clear(ctx: &egui::Context, st: &ElekState, olds: &[u16]) -> Option<bo
 }
 
 /// `Some(true)` to rename, `Some(false)` to cancel.
+fn group_name_dialog(ctx: &egui::Context, r: &mut (Option<usize>, Vec<usize>, String, bool)) -> Option<bool> {
+    let (g, slots, name, focus) = r;
+    let mut answer = None;
+    egui::Modal::new(egui::Id::unique("elek_group_name_modal")).show(ctx, |ui| {
+        ui.set_width(360.0);
+        ui.heading(if g.is_some() { "Rename group" } else { "New group" });
+        ui.add_space(6.0);
+        let te = ui.add(egui::TextEdit::singleline(name).hint_text("e.g. Tuned to A").desired_width(f32::INFINITY));
+        if std::mem::take(focus) {
+            te.request_focus();
+        }
+        if g.is_none() {
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(format!(
+                    "{} slot(s). Only this app knows groups; they're kept for this unit and come back \
+                     when a project has the same samples.",
+                    slots.len()
+                ))
+                .weak(),
+            );
+        }
+        ui.add_space(8.0);
+        let enter = te.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        ui.horizontal(|ui| {
+            let ok = !name.trim().is_empty();
+            if ui.add_enabled(ok, egui::Button::new(if g.is_some() { "Rename" } else { "Make group" })).clicked() || (ok && enter) {
+                answer = Some(true);
+            }
+            if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                answer = Some(false);
+            }
+        });
+    });
+    answer
+}
+
 fn rename_dialog(ctx: &egui::Context, r: &mut ((u32, u32), String, String, bool)) -> Option<bool> {
     let (_, path, name, focus) = r;
     let mut answer = None;

@@ -1,6 +1,7 @@
 //! The Elek Sample Order view: the device's sample pool, docked as one pane
 //! beside the files, or in two side-by-side lists so a slot can be dragged
-//! onto any other (in any bank) to swap them. Also the device bar both
+//! onto any other (in any bank), pushing what's there down to the next
+//! empty slot (⌥ swaps). Also the device bar both
 //! device pages share.
 
 use crate::device::{ElekProject, PoolEntry, SavedProject};
@@ -13,12 +14,13 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 mod chrome;
 mod dialogs;
 mod editing;
+mod groups;
 mod keys;
 mod slot_menu;
 mod slots;
 mod state;
 
-pub(crate) use chrome::{device_bar, device_pages, load_screen, mode_header, status_line, top};
+pub(crate) use chrome::{RowPick, device_bar, device_row, device_rows_below, load_screen, mode_header, status_line, top};
 pub(crate) use dialogs::finish;
 use chrome::{memory_bar, order_tools, preview_tools, MEM_BAR_H};
 use slot_menu::{slot_menu, slot_tooltip};
@@ -82,8 +84,22 @@ pub struct ElekState {
     cursor: Option<usize>,
     /// Pane the keyboard drives.
     active: usize,
-    /// Earlier orders and fills, for undo.
-    undo: Vec<(Vec<u16>, HashMap<u16, PoolEntry>)>,
+    /// Earlier orders, fills and groups, for undo.
+    undo: Vec<Undo>,
+    /// Sample groups shown in this project (see `groups.rs`).
+    groups: Vec<groups::Group>,
+    /// This unit's saved groups, all projects; `groups_from` are the
+    /// indices the shown ones came from. Handed back to the app (which
+    /// saves them) when `groups_dirty`.
+    pub saved_groups: Vec<groups::PoolGroup>,
+    groups_from: Vec<usize>,
+    pub groups_unit: Option<String>,
+    pub groups_dirty: bool,
+    /// The slot drag is a whole group's (by its name or frame).
+    group_drag: Option<usize>,
+    /// Naming a group: `(group to rename, or None for a new one from these
+    /// slots, name typed so far, focus the field next frame)`.
+    group_naming: Option<(Option<usize>, Vec<usize>, String, bool)>,
     /// New +Drive files put into slots that were empty, by slot as read.
     pub fills: HashMap<u16, PoolEntry>,
     /// Slots (as read) waiting for a dropped file to upload and be found
@@ -193,10 +209,8 @@ pub enum ElekIntent {
     ReadPresetTags { bank: String, slot: u32 },
     PushPresets(crate::device::presets::PresetPush),
     BackToEditor,
-    /// The DEVICE switch: close the device panels and its MIDI ports.
-    ToggleDevice,
-    /// The +Drive tab next to Patterns: show the +Drive in the right column.
-    ShowDrive,
+    /// A click in a device row (see [`device_row`]).
+    DeviceRow(RowPick),
     ListProjects,
     Read,
     /// `force`: send even if the device's project changed since the read.
@@ -257,6 +271,13 @@ pub enum ElekIntent {
     ReadSounds,
 }
 
+/// One undo step of the pool.
+struct Undo {
+    order: Vec<u16>,
+    fills: HashMap<u16, PoolEntry>,
+    groups: Vec<groups::Group>,
+}
+
 /// A drag of the selected slots.
 #[derive(Clone, Copy)]
 struct SlotDrag;
@@ -265,8 +286,15 @@ enum RowAct {
     Click(usize, egui::Modifiers),
     /// `(slot, how far down the row it was grabbed)`.
     DragStart(usize, f32),
-    DropBefore(usize),
-    DropOn(usize),
+    /// A group grabbed by its name or frame: `(group, slot grabbed, how far
+    /// down that row)`.
+    GroupDragStart(usize, usize, f32),
+    Drop(groups::SlotDrop),
+    /// Make a group of these slots (asks for its name).
+    NewGroup(Vec<usize>),
+    RenameGroup(usize),
+    DissolveGroup(usize),
+    SelectGroup(usize),
     /// `(slot, how many)`.
     InsertEmpty(usize, usize),
     CloseGap(usize),

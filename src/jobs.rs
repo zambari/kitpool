@@ -87,6 +87,8 @@ pub enum Ev {
     Linked(crate::links::Link),
     /// Fingerprints made off the UI thread (see [`crate::prints`]).
     Printed(crate::prints::Found),
+    /// `ev` came from the device worker of `unit` (a MIDI input name).
+    FromUnit { unit: String, ev: Box<Ev> },
 }
 
 /// Files with identical contents: `keep` has the shortest name.
@@ -133,6 +135,7 @@ impl Jobs {
         Emitter {
             tx: self.tx.clone(),
             ctx: self.ctx.clone(),
+            unit: None,
         }
     }
 
@@ -150,6 +153,7 @@ impl Jobs {
 
     fn spawn(&self, name: &str, f: impl FnOnce(Emitter) + Send + 'static) {
         let em = Emitter {
+            unit: None,
             tx: self.tx.clone(),
             ctx: self.ctx.clone(),
         };
@@ -290,10 +294,27 @@ fn trash_one(p: &Path) -> Result<PathBuf, String> {
 pub struct Emitter {
     tx: Sender<Ev>,
     ctx: egui::Context,
+    /// A device worker's unit: everything sent is wrapped in
+    /// [`Ev::FromUnit`] so the app can tell the units apart.
+    unit: Option<String>,
 }
 
 impl Emitter {
+    /// The same channel, with every event tagged as coming from `unit`.
+    pub fn for_unit(&self, unit: Option<String>) -> Emitter {
+        Emitter { unit, ..self.clone() }
+    }
+
+    /// Redraw the UI for state that isn't an event (device busy flags).
+    pub fn repaint(&self) {
+        self.ctx.request_repaint();
+    }
+
     pub fn send(&self, ev: Ev) {
+        let ev = match &self.unit {
+            Some(unit) => Ev::FromUnit { unit: unit.clone(), ev: Box::new(ev) },
+            None => ev,
+        };
         // If the receiver is gone the app is shutting down; drop silently.
         if self.tx.send(ev).is_ok() {
             self.ctx.request_repaint();

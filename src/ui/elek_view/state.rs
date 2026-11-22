@@ -111,6 +111,9 @@ impl ElekState {
     }
 
     pub fn set_project(&mut self, p: Box<ElekProject>) {
+        // Groups go back to the saved list by hash first, so a read-back
+        // after a push finds them at their new slots.
+        self.sync_saved_groups();
         self.proj.reset(&p);
         self.lib.project_changed(&p);
         self.order = (0..p.pool.len() as u16).collect();
@@ -123,11 +126,17 @@ impl ElekState {
         self.cursor = None;
         self.undo.clear();
         self.clip = None;
+        self.group_drag = None;
+        self.group_naming = None;
         self.project = Some(p);
+        self.match_groups();
     }
 
     /// Drops the loaded project, back to the project picker.
     pub(crate) fn close_project(&mut self) {
+        self.sync_saved_groups();
+        self.groups.clear();
+        self.groups_from.clear();
         self.project = None;
         // Copied patterns stay, to paste into the next project.
         let xclip = self.proj.xclip.take();

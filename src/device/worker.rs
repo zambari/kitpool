@@ -4,6 +4,9 @@
 use super::*;
 
 pub(super) struct Worker {
+    /// The unit this worker talks to (its MIDI input name); `None` when
+    /// none is plugged in, so every request fails with "not found".
+    pub(super) unit: Option<String>,
     pub(super) conn: Option<Conn>,
     pub(super) em: Emitter,
     pub(super) job: Option<Prog>,
@@ -278,6 +281,10 @@ impl Worker {
                     Err(_) => return,
                 },
             };
+            let long = matches!(cmd, Cmd::Job { .. } | Cmd::Elek(_));
+            if long {
+                self.mark_busy(true);
+            }
             match cmd {
                 Cmd::List { path, generation } => self.list_now(path, generation),
                 Cmd::Job { job, cancel, task } => {
@@ -290,11 +297,9 @@ impl Worker {
                 }
                 Cmd::Elek(cmd) => self.elek(cmd),
                 Cmd::Release => self.release(),
-                Cmd::Repick => {
-                    if self.conn.take().is_some() {
-                        crate::log::line("device: ports closed (other unit picked)".to_owned());
-                    }
-                }
+            }
+            if self.later.is_empty() {
+                self.mark_busy(false);
             }
             // Renames held back while that ran go before the waiting jobs.
             self.apply_held();
@@ -307,7 +312,29 @@ impl Worker {
         if self.conn.take().is_some() {
             crate::log::line("device: ports closed (switched off)".to_owned());
         }
-        self.em.send(Ev::DeviceStatus(Err("Switched off".into())));
+        self.set_status(Err("Switched off".into()));
+    }
+
+    /// Tell the device rows whether this unit is working.
+    fn mark_busy(&self, busy: bool) {
+        if let Some(u) = &self.unit {
+            if super::presence::set_busy(u, busy) {
+                self.em.repaint();
+            }
+        }
+    }
+
+    /// This worker's unit is switched off.
+    pub(super) fn off(&self) -> bool {
+        self.unit.as_deref().is_some_and(super::presence::unit_off)
+    }
+
+    /// Tell the UI how the link is, now and in [`super::connection_status`].
+    pub(super) fn set_status(&self, s: Result<String, String>) {
+        if let Some(u) = &self.unit {
+            super::presence::set_connection_status(u, s.clone());
+        }
+        self.em.send(Ev::DeviceStatus(s));
     }
 
     /// Run the renames held back because they touch the running job's
@@ -389,7 +416,7 @@ impl Worker {
 
     /// Drop the connection if the device's port is gone.
     pub(super) fn check_alive(&mut self) {
-        if super::switched_off() {
+        if self.off() {
             if self.conn.is_some() {
                 self.release();
             }
@@ -407,8 +434,7 @@ impl Worker {
             .conn
             .take()
             .is_some_and(|c| c.dead || !port_present(&c.port));
-        super::presence::set_connection_status(Err(e.clone()));
-        self.em.send(Ev::DeviceStatus(Err(e.clone())));
+        self.set_status(Err(e.clone()));
         if gone {
             self.em.send(Ev::DeviceLost);
         }
@@ -513,26 +539,24 @@ impl Worker {
             )),
             None => Err("not connected".to_owned()),
         };
-        super::presence::set_connection_status(s.clone());
-        self.em.send(Ev::DeviceStatus(s));
+        self.set_status(s);
     }
 
     /// Run `f` on the connection, opening it first if needed. A link failure
     /// closes it again so the next call starts fresh.
     pub(super) fn with_conn<T>(&mut self, f: impl FnOnce(&mut Conn) -> R<T>) -> Result<T, String> {
-        if super::switched_off() {
+        if self.off() {
             self.conn = None;
-            return Err("Device switched off (click DEVICE to connect)".into());
+            return Err("Device switched off (click its name to connect)".into());
         }
         if self.conn.is_none() {
-            match Conn::open() {
+            match Conn::open(self.unit.as_deref()) {
                 Ok(c) => {
                     self.conn = Some(c);
                     self.status();
                 }
                 Err(e) => {
-                    super::presence::set_connection_status(Err(e.clone()));
-                    self.em.send(Ev::DeviceStatus(Err(e.clone())));
+                    self.set_status(Err(e.clone()));
                     return Err(e);
                 }
             }

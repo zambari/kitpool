@@ -58,6 +58,7 @@ pub(super) fn slot_pane(ui: &mut egui::Ui, st: &mut ElekState, side: usize) {
     // happens) or Escape.
     if ui.input(|i| (!i.pointer.any_down() && !i.pointer.any_released()) || i.key_pressed(egui::Key::Escape)) {
         st.slot_drag = false;
+        st.group_drag = None;
     }
     let Some(p) = &st.project else { return };
     let n = p.pool.len();
@@ -194,13 +195,18 @@ pub(super) fn slot_pane(ui: &mut egui::Ui, st: &mut ElekState, side: usize) {
             theme::always_show_scrollbar(ui);
             scroll.show_rows(ui, ROW_H, rows, |ui, range| {
                 let mut landing = None;
+                let mut top_row = None;
                 for i in range {
-                    slot_row(ui, st, first + i, &mut acts, &mut landing);
+                    let r = slot_row(ui, st, first + i, &mut acts, &mut landing);
+                    top_row.get_or_insert((first + i, r));
+                }
+                if let Some(top_row) = top_row {
+                    group_frames(ui, st, first..first + rows, top_row, &mut acts);
                 }
                 // Painted over all rows, so later rows' fills don't hide it.
-                if let Some((x, y, target, note)) = landing {
-                    slot_list::paint_landing(ui, x, y, target, false);
-                    theme::pointer_note(ui.ctx(), &note, theme::DEVICE_ACCENT);
+                if let Some((x, y, target, note, deny)) = landing {
+                    slot_list::paint_landing(ui, x, y, target, deny);
+                    theme::pointer_note(ui.ctx(), &note, if deny { theme::DENY } else { theme::DEVICE_ACCENT });
                 }
                 if st.slot_drag {
                     slot_list::drag_autoscroll(ui, ROW_H * 1.5);
@@ -222,7 +228,7 @@ pub(super) fn slot_pane(ui: &mut egui::Ui, st: &mut ElekState, side: usize) {
     for a in acts {
         let edits = !matches!(
             a,
-            RowAct::Click(..) | RowAct::DragStart(..) | RowAct::Local(..) | RowAct::ShowOriginal(_) | RowAct::Rename(_) | RowAct::Clip(..) | RowAct::DropClip
+            RowAct::Click(..) | RowAct::DragStart(..) | RowAct::GroupDragStart(..) | RowAct::NewGroup(_) | RowAct::RenameGroup(_) | RowAct::SelectGroup(_) | RowAct::Local(..) | RowAct::ShowOriginal(_) | RowAct::Rename(_) | RowAct::Clip(..) | RowAct::DropClip
         );
         if locked && edits {
             st.status = "Wait a moment: the device is busy, and an edit now would be lost".into();
@@ -240,19 +246,34 @@ pub(super) fn slot_pane(ui: &mut egui::Ui, st: &mut ElekState, side: usize) {
             }
             RowAct::DragStart(s, frac) => {
                 st.slot_drag = true;
+                st.group_drag = None;
                 st.active = side;
                 if !st.sel.contains(&s) {
                     st.click(s, egui::Modifiers::NONE);
                 }
                 st.slot_grab = slot_list::Grab::new(&st.sel, s, frac);
             }
-            RowAct::DropOn(s) => {
+            RowAct::GroupDragStart(g, s, frac) => {
+                st.slot_drag = true;
+                st.group_drag = Some(g);
                 st.active = side;
-                st.place_sel_at(s);
+                st.select_group(g);
+                st.slot_grab = slot_list::Grab::new(&st.sel, s, frac);
             }
-            RowAct::DropBefore(s) => {
+            RowAct::Drop(d) => {
                 st.active = side;
-                st.move_sel_to(s);
+                st.apply_drop(d);
+            }
+            RowAct::NewGroup(slots) => st.group_naming = Some((None, slots, String::new(), true)),
+            RowAct::RenameGroup(g) => {
+                if let Some(gr) = st.groups.get(g) {
+                    st.group_naming = Some((Some(g), Vec::new(), gr.name.clone(), true));
+                }
+            }
+            RowAct::DissolveGroup(g) => st.dissolve_group(g),
+            RowAct::SelectGroup(g) => {
+                st.active = side;
+                st.select_group(g);
             }
             RowAct::InsertEmpty(s, n) => st.insert_empty(s, n),
             RowAct::CloseGap(s) => st.close_gap(s),
@@ -290,27 +311,160 @@ pub(super) fn slot_pane(ui: &mut egui::Ui, st: &mut ElekState, side: usize) {
 }
 
 /// Drop feedback to paint once the rows are drawn: `(row x range, landing
-/// y range, target, pointer note)`.
-type Landing = (egui::Rangef, egui::Rangef, DropTarget, String);
+/// y range, target, pointer note, refused)`, and the drop itself.
+type Landing = (egui::Rangef, egui::Rangef, DropTarget, String, bool);
 
-/// Where a slot drag over `slot` lands, its feedback and its note. Sample
-/// slots are referenced by patterns, so a plain drop swaps in place, which
-/// moves the fewest samples.
-fn slot_landing(ui: &egui::Ui, st: &ElekState, rect: egui::Rect, slot: usize) -> Landing {
-    let rules = slot_list::DropRules { first: 1, len: st.order.len(), insert_default: false };
-    let n = st.sel.len().max(1);
+/// Where a slot drag over `slot` lands, its feedback and its note. A plain
+/// drop pushes what's there down to the next empty slot; over a group's
+/// rows it joins the group; ⌥ swaps (groups stay out of swaps). A group
+/// dragged by its name or frame lands whole, never inside another group.
+fn slot_landing(ui: &egui::Ui, st: &ElekState, rect: egui::Rect, slot: usize) -> (Landing, groups::SlotDrop) {
+    use groups::SlotDrop;
+    let rules = slot_list::DropRules { first: 1, len: st.order.len(), plain: slot_list::PlainDrop::Shift };
+    let spans = st.group_spans();
+    let (alt, py) = ui.input(|i| (i.modifiers.alt || i.modifiers.ctrl, i.pointer.interact_pos().map(|p| p.y)));
+    let frac = py.map_or(0.5, |y| (y - rect.top()) / ROW_H);
     let hit = slot_list::RowHit { rect, pitch: ROW_H, row: slot, slot_of: &|r| r };
-    let target = slot_list::drop_target_rows(ui, &hit, n, st.slot_grab, &rules);
-    let note = slot_list::landing_note(target, &st.sel, &rules, |s| st.label(s), |s| !st.is_empty_at(s));
+    let held_top = |n: usize| match slot_list::drop_target_rows(ui, &hit, n, st.slot_grab, &rules) {
+        DropTarget::Place(t) | DropTarget::Insert(t) | DropTarget::Shift(t) => t,
+    };
+    // A block's top strictly inside a group: just past it.
+    let clear_of = |top: usize, skip: Option<usize>| {
+        spans
+            .iter()
+            .enumerate()
+            .find(|(i, r)| Some(*i) != skip && r.start < top && top < r.end)
+            .map_or(top, |(_, r)| if skip.is_some() && top - r.start <= r.end - top { r.start } else { r.end })
+    };
+    let n_sel = st.sel.len().max(1);
+    let (d, n) = if let Some(g) = st.group_drag.filter(|&g| g < spans.len()) {
+        let len = spans[g].len();
+        (SlotDrop::Group { g, top: clear_of(held_top(len), Some(g)) }, len)
+    } else if alt {
+        (SlotDrop::Place(held_top(n_sel)), n_sel)
+    } else if let Some(g) = spans.iter().position(|r| r.contains(&slot)) {
+        let line = (slot + usize::from(frac > 0.5)).clamp(spans[g].start, spans[g].end);
+        let pos = groups::positions(&st.order);
+        let moving: HashSet<u16> = st.sel.iter().map(|&s| st.order[s]).collect();
+        let before = st.groups[g]
+            .members
+            .iter()
+            .copied()
+            .find(|&x| pos[x as usize] >= line && !moving.contains(&x));
+        (SlotDrop::Into { g, before, line }, n_sel)
+    } else {
+        (SlotDrop::Shift(clear_of(held_top(n_sel), None)), n_sel)
+    };
+    let (target, hint) = match d {
+        SlotDrop::Into { line, .. } => (DropTarget::Insert(line), "\n⌥ swap in place instead"),
+        SlotDrop::Place(t) => (DropTarget::Place(t), "\nRelease ⌥ to push down instead"),
+        SlotDrop::Shift(t) => (DropTarget::Shift(t), "\n⌥ swap in place instead"),
+        SlotDrop::Group { top, .. } => (DropTarget::Shift(top), ""),
+    };
+    let (note, deny) = match st.plan(d) {
+        Ok(p) => (p.note + hint, false),
+        Err(why) => {
+            let deny = !why.starts_with("Already");
+            (why, deny)
+        }
+    };
     let span = slot_list::landing_span(target, n);
     let y = |s: usize| rect.top() + (s as f32 - slot as f32) * ROW_H;
-    (rect.x_range(), egui::Rangef::new(y(span.start), y(span.end)), target, note)
+    ((rect.x_range(), egui::Rangef::new(y(span.start), y(span.end)), target, note, deny), d)
+}
+
+/// Dashed frames around the groups in this bank, with their name on a tab.
+/// The tab and the frame's left and right edges grab the whole group.
+fn group_frames(
+    ui: &mut egui::Ui,
+    st: &ElekState,
+    bank: std::ops::Range<usize>,
+    (s0, r0): (usize, egui::Rect),
+    acts: &mut Vec<RowAct>,
+) {
+    let y = |s: usize| r0.top() + (s as f32 - s0 as f32) * ROW_H;
+    let clip = ui.clip_rect();
+    for (g, span) in st.group_spans().into_iter().enumerate() {
+        if !bank.contains(&span.start) {
+            continue;
+        }
+        let rect = egui::Rect::from_x_y_ranges(r0.x_range(), y(span.start)..=y(span.end)).shrink2(egui::vec2(1.0, 0.5));
+        if !clip.intersects(rect) {
+            continue;
+        }
+        let name = &st.groups[g].name;
+        let galley = ui.painter().layout_no_wrap(name.clone(), oled_font(TEXT - 5.0), OLED_BG);
+        let tag_size = galley.size() + egui::vec2(10.0, 2.0);
+        let tag_top = (rect.top() - tag_size.y / 2.0).max(clip.top()).min(rect.bottom() - tag_size.y);
+        let tag = egui::Rect::from_min_size(egui::pos2(rect.right() - 12.0 - tag_size.x, tag_top), tag_size);
+        let id = ui.scope_id().with(("group", g));
+        let edge = 5.0;
+        let tag_r = ui.interact(tag, id.with("tag"), Sense::click_and_drag());
+        let left = ui.interact(
+            egui::Rect::from_min_max(rect.min, egui::pos2(rect.left() + edge, rect.bottom())),
+            id.with("left"),
+            Sense::drag(),
+        );
+        let right = ui.interact(
+            egui::Rect::from_min_max(egui::pos2(rect.right() - edge, rect.top()), rect.max),
+            id.with("right"),
+            Sense::drag(),
+        );
+        let dragging = st.group_drag == Some(g);
+        let hot = dragging || [&tag_r, &left, &right].iter().any(|r| r.hovered());
+        if hot && !st.slot_drag {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+        }
+        let c = if hot { theme::DEVICE_ACCENT_BRIGHT } else { theme::DEVICE_ACCENT };
+        let pts = [rect.left_top(), rect.right_top(), rect.right_bottom(), rect.left_bottom(), rect.left_top()];
+        let p = ui.painter();
+        p.extend(egui::Shape::dashed_line(&pts, Stroke::new(if hot { 2.0 } else { 1.2 }, c), 5.0, 3.0));
+        p.rect_filled(tag, 2.0, c);
+        p.galley(tag.min + egui::vec2(5.0, 1.0), galley, OLED_BG);
+        for r in [&tag_r, &left, &right] {
+            if r.drag_started() {
+                let py = ui.input(|i| i.pointer.press_origin()).map_or(rect.top(), |p| p.y);
+                let row = (((py - y(span.start)) / ROW_H).floor().max(0.0) as usize).min(span.len() - 1);
+                let frac = (py - y(span.start + row)) / ROW_H;
+                acts.push(RowAct::GroupDragStart(g, span.start + row, frac));
+                r.dnd_set_drag_payload(SlotDrag);
+            }
+        }
+        if tag_r.clicked() {
+            acts.push(RowAct::SelectGroup(g));
+        }
+        if tag_r.double_clicked() {
+            acts.push(RowAct::RenameGroup(g));
+        }
+        let tag_r = tag_r.on_hover_text(format!(
+            "Group \"{name}\": {} slot(s), moves as one.\nDrag the name or the frame's side to move it · drop slots on its rows to add them · drag one out to remove it\nDouble-click to rename · right-click for more",
+            span.len()
+        ));
+        tag_r.context_menu(|ui| group_menu(ui, g, acts));
+    }
+}
+
+fn group_menu(ui: &mut egui::Ui, g: usize, acts: &mut Vec<RowAct>) {
+    if ui.button("Select group's slots").clicked() {
+        acts.push(RowAct::SelectGroup(g));
+        ui.close();
+    }
+    if ui.button("Rename group…").clicked() {
+        acts.push(RowAct::RenameGroup(g));
+        ui.close();
+    }
+    if ui.button("Dissolve group").on_hover_text("Forget the group; its samples stay where they are").clicked() {
+        acts.push(RowAct::DissolveGroup(g));
+        ui.close();
+    }
 }
 
 /// One slot row, laid out like the device's file list.
-fn slot_row(ui: &mut egui::Ui, st: &ElekState, slot: usize, acts: &mut Vec<RowAct>, landing: &mut Option<Landing>) {
-    if st.project.is_none() { return; }
+fn slot_row(ui: &mut egui::Ui, st: &ElekState, slot: usize, acts: &mut Vec<RowAct>, landing: &mut Option<Landing>) -> egui::Rect {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW_H), Sense::empty());
+    if st.project.is_none() {
+        return rect;
+    }
     let from = st.order[slot] as usize;
     let e = st.entry(from);
     let filling = st.filling.get(&(from as u16));
@@ -448,7 +602,7 @@ fn slot_row(ui: &mut egui::Ui, st: &ElekState, slot: usize, acts: &mut Vec<RowAc
 
     if off {
         slot_drop(ui, st, rect, slot, &resp, acts, landing);
-        return;
+        return rect;
     }
     let info = SlotRowInfo {
         slot,
@@ -493,12 +647,10 @@ fn slot_row(ui: &mut egui::Ui, st: &ElekState, slot: usize, acts: &mut Vec<RowAc
     } else if filling.is_some() {
         resp.on_hover_text("Uploading to the +Drive, then checking the device can find it. Pushing waits for this.");
     }
+    rect
 }
 
-/// A slot drag over this row: by default the selection lands as a block the
-/// way it's held (grabbed row under the pointer), swapping with what's
-/// there. With ⌃ or ⌥ it's inserted at the nearest row boundary instead,
-/// shifting the slots in between.
+/// A slot or group drag over this row; see `slot_landing` for where it lands.
 fn slot_drop(
     ui: &egui::Ui,
     st: &ElekState,
@@ -512,17 +664,13 @@ fn slot_drop(
     if !over {
         return;
     }
-    let l = slot_landing(ui, st, rect, slot);
-    let target = l.2;
+    let (l, d) = slot_landing(ui, st, rect, slot);
     *landing = Some(l);
     // Our own drag flag too: if anything else cleared egui's payload this
     // frame, the drop still lands.
     let released = resp.contains_pointer() && ui.input(|i| i.pointer.any_released());
     if resp.release_payload::<SlotDrag>().is_some() || (released && st.slot_drag) {
-        acts.push(match target {
-            DropTarget::Insert(at) => RowAct::DropBefore(at),
-            DropTarget::Place(at) => RowAct::DropOn(at),
-        });
+        acts.push(RowAct::Drop(d));
     }
 }
 

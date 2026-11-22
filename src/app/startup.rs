@@ -106,6 +106,12 @@ impl App {
             device_status: None,
             last_presence: Default::default(),
             last_unit: None,
+            unit_name: None,
+            pool_groups: saved.as_ref().map(|s| s.pool_groups.clone()).unwrap_or_default(),
+            parked_units: Default::default(),
+            background: false,
+            drive_dirs: Default::default(),
+            unit_lost: false,
             device_last: None,
             staged_upload: None,
             pool_edit: None,
@@ -287,6 +293,7 @@ impl App {
             kit_grid: self.kit_grid,
             device_hides_files: self.elek.hide_files,
             device_open_banks: self.elek.proj.banks,
+            pool_groups: self.pool_groups.clone(),
         }
     }
 }

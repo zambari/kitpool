@@ -3,24 +3,16 @@
 use super::*;
 
 pub(super) fn header(ui: &mut Ui, ed: &mut Editor, focused: bool, drive_shown: bool, out: &mut Vec<EdIntent>) {
-    ui.horizontal(|ui| {
+    use crate::ui::elek_view::{device_row, device_rows_below};
+    let indent = ui.horizontal(|ui| {
         if ui.add(crate::ui::theme::mode_title("Sample Editor", true, focused)).clicked() {
             out.push(EdIntent::TookFocus);
         }
         ui.add_space(14.0);
-        crate::ui::theme::device_group(ui, |ui| {
-            if crate::ui::theme::device_switch(ui, false, false).clicked() {
-                out.push(EdIntent::ToggleDevice);
-            }
-            if crate::device::presence().available() {
-                use crate::ui::elek_view::DevicePick;
-                match crate::ui::elek_view::device_pages(ui, None, drive_shown) {
-                    Some(DevicePick::Page(page)) => out.push(EdIntent::DevicePage(page)),
-                    Some(DevicePick::Drive) => out.push(EdIntent::ShowDrive),
-                    None => {}
-                }
-            }
-        });
+        let indent = ui.cursor().min.x - ui.max_rect().min.x;
+        if let Some(pick) = device_row(ui, 0, None, drive_shown, false) {
+            out.push(EdIntent::DeviceRow(pick));
+        }
         ui.separator();
         if let (Some((a, b)), Some(s)) = (ed.crop, ed.sample()) {
             ui.label(RichText::new(format!("✂ cropped view {:.3}–{:.3}s", s.seconds(a), s.seconds(b))).weak())
@@ -29,7 +21,13 @@ pub(super) fn header(ui: &mut Ui, ed: &mut Editor, focused: bool, drive_shown: b
         if ed.loading.is_some() {
             ui.spinner();
         }
-    });
+        indent
+    })
+    .inner;
+    // One more device row per further unit plugged in.
+    if let Some(pick) = device_rows_below(ui, indent, None, drive_shown, false) {
+        out.push(EdIntent::DeviceRow(pick));
+    }
     panel_toggles(ui, &mut ed.prefs.panels, ed.is_kit);
 }
 

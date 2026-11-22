@@ -19,6 +19,8 @@ pub struct Clipboard {
     pub kind: Kind,
     /// The paths are on the Digitakt.
     pub device: bool,
+    /// Which unit's +Drive, when `device` (several can be plugged in).
+    pub unit: Option<String>,
     pub paths: Vec<PathBuf>,
 }
 

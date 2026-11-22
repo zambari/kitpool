@@ -377,15 +377,8 @@ impl App {
         let (id, cancel) = self.jobs.register();
         self.device.run(id, cancel, task);
         self.active_jobs.push(ActiveJob {
-            id,
-            label: label.to_owned(),
-            done_bytes: 0,
-            total_bytes,
-            done_items: 0,
-            total_items,
-            started: false,
-            file: None,
-            file_bar: false,
+            unit: device::active_unit(),
+            ..ActiveJob::new(id, label, total_items, total_bytes, false)
         });
         id
     }
@@ -759,7 +752,11 @@ impl App {
                     self.device_status = Some(s)
                 }
                 Ev::Elek(e) => self.elek_event(e),
+                // A parked unit's tabs are the shown unit's now: read it
+                // again when it's shown instead.
+                Ev::DeviceLost if self.background => self.unit_lost = true,
                 Ev::DeviceLost => self.leave_device_tabs(),
+                Ev::FromUnit { ev, .. } => self.absorb(vec![*ev]),
                 Ev::DirSize { path, bytes, files } => {
                     self.sizes.set(path, bytes, files);
                 }
@@ -847,6 +844,7 @@ impl App {
                         self.factory_warned = false;
                     }
                     self.errors.extend(errors);
+                    let shown = !self.background;
                     for dir in touched {
                         // A transfer changes sizes up the whole chain, so the
                         // cached values above it are now wrong too.
@@ -855,11 +853,11 @@ impl App {
                         self.reload_showing(&dir, false);
                     }
                     if let Some((_, p)) = self.reveal_after.take_if(|(id, _)| *id == job) {
-                        if !cancelled {
+                        if !cancelled && shown {
                             self.reveal_when_listed(&p, true);
                         }
                     }
-                    for dir in device_touched {
+                    for dir in device_touched.into_iter().filter(|_| shown) {
                         self.reload_showing(&dir, true);
                     }
                     if let Some(p) = load {

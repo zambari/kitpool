@@ -78,9 +78,17 @@ pub struct ProjEd {
 impl ProjEd {
     pub fn reset(&mut self, p: &ElekProject) {
         let (used_only, banks, bytes) = (self.used_only, self.banks, self.bytes);
-        // A copied sound goes on as a stand-alone sound (like a preset):
-        // the project it points into is gone.
-        let pool_clip = self.pool_clip.clone()
+        let pool_clip = self.carried_pool_clip(Some(p));
+        let (xclip, xtrack_ev, xtrack_snd) = (self.xclip.take(), self.xtrack_ev.take(), self.xtrack_snd.take());
+        *self = Self { used_only, banks, bytes, pool_clip, xclip, xtrack_ev, xtrack_snd, ..Self::default() };
+        self.refresh(p);
+    }
+
+    /// The copied sound as it goes into another project (`p`, when one is
+    /// loaded there): a stand-alone sound (like a preset), since the
+    /// project it points into is gone.
+    fn carried_pool_clip(&self, p: Option<&ElekProject>) -> Option<PoolClip> {
+        self.pool_clip.clone()
             .and_then(|mut c| {
                 if !matches!(c.cell.src, SoundSrc::Preset { .. }) {
                     c.cell = c.carry.as_ref()?.0.clone();
@@ -88,12 +96,26 @@ impl ProjEd {
                 Some(c)
             })
             .map(|mut c| {
-                c.track_ok = p.pool_sound_for_track(&c.cell).map(|_| ());
+                if let Some(p) = p {
+                    c.track_ok = p.pool_sound_for_track(&c.cell).map(|_| ());
+                }
                 c
-            });
-        let (xclip, xtrack_ev, xtrack_snd) = (self.xclip.take(), self.xtrack_ev.take(), self.xtrack_snd.take());
-        *self = Self { used_only, banks, bytes, pool_clip, xclip, xtrack_ev, xtrack_snd, ..Self::default() };
-        self.refresh(p);
+            })
+    }
+
+    /// Another unit became active and `from` is the one left: the
+    /// carry-over copies (patterns, tracks, the copied sound) come along,
+    /// as they would to another project. `p`: this unit's project.
+    pub fn carry_copies(&mut self, from: &mut ProjEd, p: Option<&ElekProject>) {
+        self.pool_clip = from.carried_pool_clip(p);
+        from.pool_clip = None;
+        self.xclip = from.xclip.take();
+        self.xtrack_ev = from.xtrack_ev.take();
+        self.xtrack_snd = from.xtrack_snd.take();
+        // Copies in the old project's own form don't mean anything here.
+        self.clip.clear();
+        self.tclip_ev = None;
+        self.tclip_snd = None;
     }
 
     /// The edits just went to the device and `p` is the project built from

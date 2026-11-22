@@ -112,17 +112,7 @@ impl App {
         let total_items = ops.len();
         let total_bytes = ops.iter().map(|o| o.approx_bytes).sum();
         let id = self.jobs.execute_then(kind, ops, tidy);
-        self.active_jobs.push(ActiveJob {
-            id,
-            label: String::new(),
-            done_bytes: 0,
-            total_bytes,
-            done_items: 0,
-            total_items,
-            started: true,
-            file: None,
-            file_bar: false,
-        });
+        self.active_jobs.push(ActiveJob::new(id, "", total_items, total_bytes, true));
         id
     }
 
@@ -136,17 +126,7 @@ impl App {
             &parent.join(format!("{} Mono", name.to_string_lossy())),
         );
         let id = self.jobs.mono_copy(dir, dst, folds);
-        self.active_jobs.push(ActiveJob {
-            id,
-            label: String::new(),
-            done_bytes: 0,
-            total_bytes: 0,
-            done_items: 0,
-            total_items: 0,
-            started: true,
-            file: None,
-            file_bar: false,
-        });
+        self.active_jobs.push(ActiveJob::new(id, "", 0, 0, true));
         self.undo_jobs.insert(id, UndoJob::Copy);
         self.status = "Making mono copy…".to_owned();
     }

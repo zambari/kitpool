@@ -45,6 +45,7 @@ mod relaunch;
 mod startup;
 mod transfers;
 mod undo;
+mod units;
 
 /// A transfer the user has been asked about and not yet answered.
 struct PendingPlan {
@@ -127,6 +128,9 @@ struct StagedUpload {
 struct ActiveJob {
     id: u64,
     label: String,
+    /// The device unit a device job runs on, for its label while several
+    /// are plugged in.
+    unit: Option<String>,
     done_bytes: u64,
     total_bytes: u64,
     done_items: usize,
@@ -139,6 +143,23 @@ struct ActiveJob {
     /// Has reported a file on the wire, so the status bar keeps a slot for
     /// the per-file bar between files instead of letting the main bar jump.
     file_bar: bool,
+}
+
+impl ActiveJob {
+    fn new(id: u64, label: &str, total_items: usize, total_bytes: u64, started: bool) -> Self {
+        Self {
+            id,
+            label: label.to_owned(),
+            unit: None,
+            done_bytes: 0,
+            total_bytes,
+            done_items: 0,
+            total_items,
+            started,
+            file: None,
+            file_bar: false,
+        }
+    }
 }
 
 /// Jobs already finished since the queue was last empty, so the status bar
@@ -392,6 +413,19 @@ pub struct App {
     device_origin: Option<(PathBuf, PathBuf)>,
     /// Waiting on the "send to device as" question.
     send_back: Option<dialogs::SendBack>,
+    /// The unit the unit-specific fields belong to (see [`units`]), and
+    /// the other units' parked share of them.
+    unit_name: Option<String>,
+    /// Sample groups per unit, saved with the app state. The shown unit's
+    /// list is handed to `elek` and taken back when it changes.
+    pool_groups: std::collections::BTreeMap<String, Vec<state::PoolGroup>>,
+    parked_units: std::collections::HashMap<String, units::UnitCtx>,
+    /// Applying a parked unit's events: leave the shown tabs alone.
+    background: bool,
+    /// Device tabs' folders on this unit, by tab id, kept while it's parked.
+    drive_dirs: std::collections::HashMap<u64, PathBuf>,
+    /// This unit was unplugged while parked: read it again when shown.
+    unit_lost: bool,
 }
 
 impl App {
@@ -406,6 +440,23 @@ impl App {
         match role {
             Role::Source => &mut self.source,
             Role::Dest => &mut self.dest,
+        }
+    }
+
+    /// Hands the shown unit's saved sample groups to the pool view, and
+    /// takes them back for saving when they change.
+    fn sync_pool_groups(&mut self) {
+        let unit = self.unit_name.clone().unwrap_or_default();
+        if self.elek.groups_unit.as_ref() != Some(&unit) {
+            let saved = self.pool_groups.get(&unit).cloned().unwrap_or_default();
+            self.elek.set_saved_groups(unit.clone(), saved);
+        }
+        if std::mem::take(&mut self.elek.groups_dirty) {
+            if self.elek.saved_groups.is_empty() {
+                self.pool_groups.remove(&unit);
+            } else {
+                self.pool_groups.insert(unit, self.elek.saved_groups.clone());
+            }
         }
     }
 
@@ -466,9 +517,11 @@ impl eframe::App for App {
         for role in [Role::Source, Role::Dest] {
             self.pane_mut(role).note_active();
         }
+        self.sync_unit();
+        self.sync_pool_groups();
         let events = self.jobs.drain();
         if !events.is_empty() {
-            self.absorb(events);
+            self.absorb_units(events);
         }
         self.track_presence();
         crate::ui::elek_presets_view::finish_copy(&mut self.elek, ctx);

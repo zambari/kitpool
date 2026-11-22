@@ -237,6 +237,10 @@ impl App {
     /// The first read has its sample names: Patterns in the centre (if
     /// the user is still on a device page), the pool docked on the right.
     fn first_dock_now(&mut self) {
+        // A parked unit's read: the layout belongs to the one shown.
+        if self.background {
+            return;
+        }
         self.first_dock = false;
         self.dock_pool = true;
         self.pool_focused = false;
@@ -277,7 +281,7 @@ impl App {
         }
         self.device.switch_off(off);
         self.status = if off {
-            "Device switched off: MIDI ports closed. Click DEVICE to connect again.".into()
+            "Device switched off: MIDI ports closed. Click its name to connect again.".into()
         } else {
             "Device switched on".into()
         };

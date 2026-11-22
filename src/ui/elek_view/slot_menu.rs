@@ -174,6 +174,41 @@ pub(super) fn slot_menu(ui: &mut egui::Ui, st: &ElekState, row: &SlotRowInfo<'_>
     };
     let counted = !p.partial;
     ui.separator();
+    // Groups: this row's, or make one from the selection (or this row).
+    if let Some(g) = st.group_at(slot) {
+        let name = &st.groups[g].name;
+        if ui.button(format!("Select group \"{name}\"")).clicked() {
+            acts.push(RowAct::SelectGroup(g));
+            ui.close();
+        }
+        if ui.button("Rename group…").clicked() {
+            acts.push(RowAct::RenameGroup(g));
+            ui.close();
+        }
+        if ui.button("Dissolve group").on_hover_text("Forget the group; its samples stay where they are").clicked() {
+            acts.push(RowAct::DissolveGroup(g));
+            ui.close();
+        }
+    } else {
+        let pick: Vec<usize> = if selected { st.sel.iter().copied().collect() } else { vec![slot] };
+        let label = if pick.len() == 1 { "Make a group of this slot…".to_owned() } else { format!("Group {} slots…", pick.len()) };
+        match st.groupable(&pick) {
+            Ok(()) => {
+                if ui
+                    .button(label)
+                    .on_hover_text("Name it; the slots then move as one. Drop slots on it to add them, drag them out to remove them")
+                    .clicked()
+                {
+                    acts.push(RowAct::NewGroup(pick));
+                    ui.close();
+                }
+            }
+            Err(why) => {
+                ui.add_enabled(false, egui::Button::new(label)).on_disabled_hover_text(why);
+            }
+        }
+    }
+    ui.separator();
     if !targets.is_empty() {
         let used = targets.iter().filter(|&&s| p.uses[st.order[s] as usize] > 0).count();
         let label = if targets.len() == 1 {

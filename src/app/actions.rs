@@ -164,6 +164,7 @@ impl App {
         self.clipboard = Some(Clipboard {
             kind,
             device,
+            unit: device.then(device::active_unit).flatten(),
             paths,
         });
     }
@@ -185,6 +186,13 @@ impl App {
             self.slots_dropped(role, dest, keys);
             return;
         };
+        if let Some(u) = clip.unit.as_ref().filter(|u| clip.device && self.unit_name.as_ref() != Some(*u)) {
+            self.status = format!(
+                "Those files are on the {}'s +Drive: show it to paste them. Copying between two devices' +Drives isn't supported yet; patterns and sounds paste across.",
+                device::short_name(u)
+            );
+            return;
+        }
         let tab = self.pane(role).active_tab();
         let to_dev = tab.device;
         let dest = target.unwrap_or_else(|| tab.cwd.clone());

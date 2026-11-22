@@ -6,8 +6,17 @@ use super::*;
 pub(super) const MEM_BAR_H: f32 = 26.0;
 
 /// The mode switch across the top of both full-window pages, with the
-/// layout switches on the right.
+/// layout switches on the right, and a device row under it for each
+/// further unit plugged in.
 pub(crate) fn mode_header(ui: &mut egui::Ui, st: &mut ElekState, out: &mut Vec<ElekIntent>) {
+    let indent = ui.horizontal(|ui| mode_row(ui, st, out)).inner;
+    if let Some(pick) = device_rows_below(ui, indent, Some(st.page), false, true) {
+        out.push(ElekIntent::DeviceRow(pick));
+    }
+}
+
+/// [`mode_header`]'s first row; returns where its device row starts.
+fn mode_row(ui: &mut egui::Ui, st: &mut ElekState, out: &mut Vec<ElekIntent>) -> f32 {
     let back = match &st.playing {
         Some(name) => ui
             .add(
@@ -23,20 +32,12 @@ pub(crate) fn mode_header(ui: &mut egui::Ui, st: &mut ElekState, out: &mut Vec<E
         out.push(ElekIntent::BackToEditor);
     }
     ui.add_space(14.0);
-    theme::device_group(ui, |ui| {
-        if theme::device_switch(ui, true, true).clicked() {
-            out.push(ElekIntent::ToggleDevice);
-        }
-        if crate::device::presence().available() {
-            // The top tabs pick one place at a time: here a page is, so
-            // +Drive isn't lit even when the right column shows it.
-            match device_pages(ui, Some(st.page), false) {
-                Some(DevicePick::Page(page)) => st.page = page,
-                Some(DevicePick::Drive) => out.push(ElekIntent::ShowDrive),
-                None => {}
-            }
-        }
-    });
+    let indent = ui.cursor().min.x - ui.max_rect().min.x;
+    // The top tabs pick one place at a time: here a page is, so +Drive
+    // isn't lit even when the right column shows it.
+    if let Some(pick) = device_row(ui, 0, Some(st.page), false, true) {
+        out.push(ElekIntent::DeviceRow(pick));
+    }
     ui.separator();
     if let Some(p) = &st.project {
         ui.label(RichText::new(format!("{} · {}", p.model.name(), p.versions)).weak().small());
@@ -62,6 +63,63 @@ pub(crate) fn mode_header(ui: &mut egui::Ui, st: &mut ElekState, out: &mut Vec<E
         ui.toggle_value(&mut st.hide_files, "Hide file panes")
             .on_hover_text("Give this view the whole window. Off: the file panes stay on the sides and this view takes the editor's place. Remembered.");
     });
+    indent
+}
+
+/// A click in a device row, for the app: show `unit` first when it is
+/// not the one shown, then go to `what`; `what == None` is a click on the
+/// name (on the shown unit's row: switch it off or on).
+pub(crate) struct RowPick {
+    pub unit: Option<String>,
+    pub what: Option<DevicePick>,
+}
+
+/// The units to give a row: every one plugged in, else one row for the
+/// last one shown (or a plain DEVICE row) so its state still shows.
+fn row_units() -> Vec<Option<String>> {
+    let units = crate::device::units();
+    if units.is_empty() {
+        return vec![crate::device::active_unit()];
+    }
+    units.into_iter().map(Some).collect()
+}
+
+/// Device row `i` (see [`row_units`]): the unit's name switch and, while
+/// it's usable, its pages; a spinner while a unit not shown is busy.
+/// `page` / `drive`: what's lit on the shown unit's row, as
+/// [`device_pages`]; `active`: the page header is a device page.
+pub(crate) fn device_row(ui: &mut egui::Ui, i: usize, page: Option<ElekPage>, drive: bool, active: bool) -> Option<RowPick> {
+    let unit = row_units().into_iter().nth(i)?;
+    let shown = unit.is_none() || unit == crate::device::active_unit();
+    theme::device_group(ui, |ui| {
+        let mut pick = None;
+        if theme::device_switch(ui, unit.as_deref(), shown, active && shown, active && shown).clicked() {
+            pick = Some(RowPick { unit: unit.clone(), what: None });
+        }
+        if theme::UnitLook::of(unit.as_deref()).available {
+            let lit = |on: bool| on && shown;
+            if let Some(what) = device_pages(ui, page.filter(|_| shown), lit(drive)) {
+                pick = Some(RowPick { unit: unit.clone(), what: Some(what) });
+            }
+        }
+        if !shown && unit.as_deref().is_some_and(crate::device::unit_busy) {
+            ui.spinner().on_hover_text("Working on its queue: transfers and reads keep running while another device is shown");
+        }
+        pick
+    })
+}
+
+/// The rows after the first, one per further unit, lined up `indent`
+/// from the left under the first one (drawn by the caller in its header).
+pub(crate) fn device_rows_below(ui: &mut egui::Ui, indent: f32, page: Option<ElekPage>, drive: bool, active: bool) -> Option<RowPick> {
+    let mut pick = None;
+    for i in 1..row_units().len() {
+        ui.horizontal(|ui| {
+            ui.add_space(indent);
+            pick = device_row(ui, i, page, drive, active).or(pick.take());
+        });
+    }
+    pick
 }
 
 /// Samples / Patterns / +Drive: the Device's sub-pages, drawn small right
@@ -88,7 +146,7 @@ pub(crate) fn device_pages(ui: &mut egui::Ui, active: Option<ElekPage>, drive: b
 /// The full-window top: mode tabs, then the device bar with the page's own
 /// tools and progress. Status messages live in the app's bottom bar.
 pub(crate) fn top(ui: &mut egui::Ui, st: &mut ElekState, out: &mut Vec<ElekIntent>, page_tools: impl FnOnce(&mut egui::Ui, &mut ElekState)) {
-    ui.horizontal(|ui| mode_header(ui, st, out));
+    mode_header(ui, st, out);
     ui.horizontal_wrapped(|ui| {
         device_bar(ui, st, out, true);
         if st.project.is_some() {
@@ -385,9 +443,11 @@ pub(super) fn order_tools(ui: &mut egui::Ui, st: &mut ElekState) {
         st.undo();
     }
     if ui.add_enabled(!busy && changed > 0, egui::Button::new(if wide { "↺ Reset" } else { "↺" })).on_hover_text("Back to the order as read from the device").clicked() {
-        st.undo.push((st.order.clone(), st.fills.clone()));
+        st.push_undo();
         st.order = (0..st.order.len() as u16).collect();
         st.fills.clear();
+        st.groups = st.repair_groups(&st.order);
+        st.sync_saved_groups();
         st.edited_at = Some(std::time::Instant::now());
     }
     // The whole project, read from the device: every pattern can follow

@@ -76,6 +76,59 @@ pub fn place<T: Clone>(order: &mut [T], sel: &[usize], to: usize, first: usize) 
     to
 }
 
+/// Puts a group at `to, to+1, …` like an insert: what's under it moves
+/// down, pushing what's below further down until enough empty slots (the
+/// ones the group left included) have taken up the shift. Nothing below
+/// that changes. Returns the last slot that changed, or `None` (order left
+/// alone) when there isn't enough empty room below.
+pub fn shift_place<T: Clone>(
+    order: &mut [T],
+    sel: &[usize],
+    to: usize,
+    first: usize,
+    free: impl Fn(&T) -> bool,
+) -> Option<usize> {
+    if sel.is_empty() || sel.len() > order.len().saturating_sub(first) {
+        return None;
+    }
+    let to = to.clamp(first, order.len() - sel.len());
+    let mut cells: Vec<Option<T>> = order.iter().cloned().map(Some).collect();
+    let moved: Vec<T> = sel.iter().map(|&s| cells[s].take().expect("selected once")).collect();
+    // Empties pushed out of the way, to refill the holes the group left.
+    let mut spare: Vec<T> = Vec::new();
+    let mut carry: std::collections::VecDeque<T> = std::collections::VecDeque::new();
+    let mut moved = moved.into_iter();
+    let mut last = to;
+    let mut i = to;
+    loop {
+        let incoming = match moved.next() {
+            Some(m) => m,
+            None => match carry.pop_front() {
+                Some(c) => c,
+                None => break,
+            },
+        };
+        if i >= cells.len() {
+            return None;
+        }
+        match cells[i].replace(incoming) {
+            Some(old) if free(&old) => spare.push(old),
+            Some(old) => carry.push_back(old),
+            None => {}
+        }
+        last = i;
+        i += 1;
+    }
+    let mut spare = spare.into_iter();
+    for c in cells.iter_mut().filter(|c| c.is_none()) {
+        *c = spare.next();
+    }
+    for (o, c) in order.iter_mut().zip(cells) {
+        *o = c.expect("every hole refilled");
+    }
+    Some(last.max(sel.last().copied().unwrap_or(0)))
+}
+
 pub fn nudge<T>(order: &mut [T], sel: &[usize], dir: i32, first: usize) {
     let (Some(&lo), Some(&hi)) = (sel.first(), sel.last()) else {
         return;
@@ -122,8 +175,21 @@ pub fn close_gap<T>(order: &mut [T], at: usize, free: impl Fn(&T) -> bool) {
 
 #[derive(Clone, Copy)]
 pub enum DropTarget {
+    /// Swap in place: the block lands at the slot, what's there goes to the
+    /// slots it left.
     Place(usize),
+    /// Insert at a row boundary; everything between old and new place shifts.
     Insert(usize),
+    /// Land at the slot like `Place`, but push what's there down until the
+    /// next empty slots take it up (`shift_place`).
+    Shift(usize),
+}
+
+/// What a plain drop does in a list (⌥/⌃ always swaps in place instead).
+#[derive(Clone, Copy, PartialEq)]
+pub enum PlainDrop {
+    Insert,
+    Shift,
 }
 
 /// Where in a drag the grabbed row sat: selected cells before it (the
@@ -152,11 +218,9 @@ pub struct DropRules {
     pub first: usize,
     /// Slots in the whole list, across banks.
     pub len: usize,
-    /// A plain drop inserts and shifts (⌥/⌃ swaps in place), instead of
-    /// the other way round. Sample slots are referenced by patterns, so
-    /// they default to swapping, which moves the fewest; presets are
-    /// copies and move freely.
-    pub insert_default: bool,
+    /// What a plain drop does; ⌥/⌃ swaps in place. Presets insert (they're
+    /// copies, order is free); samples push down to the next empty slot.
+    pub plain: PlainDrop,
 }
 
 /// The row under a drag. Rows are `pitch` apart on screen (height plus any
@@ -181,34 +245,40 @@ pub fn drop_target_rows(ui: &egui::Ui, hit: &RowHit, n: usize, grab: Grab, rules
         )
     });
     let frac = y.map_or(0.5, |y| (y - hit.rect.top()) / hit.pitch);
-    if flip != rules.insert_default {
+    if !flip && rules.plain == PlainDrop::Insert {
         let at = (hit.slot_of)(hit.row + usize::from(frac > 0.5));
         return DropTarget::Insert(at.clamp(rules.first, rules.len));
     }
     let row = (hit.row as isize + (frac - grab.frac).round() as isize).max(0) as usize;
     let top = (hit.slot_of)(row).saturating_sub(grab.before);
     let last = rules.len.saturating_sub(n.max(1)).max(rules.first);
-    DropTarget::Place(top.clamp(rules.first, last))
+    let top = top.clamp(rules.first, last);
+    if flip { DropTarget::Place(top) } else { DropTarget::Shift(top) }
 }
 
 /// The slots a target's feedback covers: the block's new place, or for an
 /// insert the `n` slots after the line.
 pub fn landing_span(target: DropTarget, n: usize) -> std::ops::Range<usize> {
     let at = match target {
-        DropTarget::Place(at) | DropTarget::Insert(at) => at,
+        DropTarget::Place(at) | DropTarget::Insert(at) | DropTarget::Shift(at) => at,
     };
     at..at + n.max(1)
 }
 
 /// The slot order a drop would make (`order[new] = old`), to count what it
-/// touches before it happens.
-pub fn preview(len: usize, sel: &[usize], target: DropTarget, first: usize) -> Vec<usize> {
+/// touches before it happens. `free(slot)`: the slot is empty now.
+pub fn preview(len: usize, sel: &[usize], target: DropTarget, first: usize, free: impl Fn(usize) -> bool) -> Vec<usize> {
     let mut order: Vec<usize> = (0..len).collect();
     match target {
         DropTarget::Place(at) => {
             place(&mut order, sel, at, first);
         }
         DropTarget::Insert(at) => insert(&mut order, sel, at, first),
+        DropTarget::Shift(at) => {
+            if shift_place(&mut order, sel, at, first, |&i| free(i)).is_none() {
+                insert(&mut order, sel, at, first);
+            }
+        }
     }
     order
 }
@@ -223,8 +293,49 @@ pub fn landing_note(
     occupied: impl Fn(usize) -> bool,
 ) -> String {
     let n = sel.len().max(1);
-    let other = if rules.insert_default { "⌥ swap in place instead" } else { "⌥ insert instead" };
+    let other = match target {
+        DropTarget::Place(_) => match rules.plain {
+            PlainDrop::Insert => "Release ⌥ to insert instead",
+            PlainDrop::Shift => "Release ⌥ to push down instead",
+        },
+        _ => "⌥ swap in place instead",
+    };
+    let range = |top: usize| {
+        if n == 1 { label(top) } else { format!("{}–{}", label(top), label(top + n - 1)) }
+    };
     match target {
+        DropTarget::Shift(top) => {
+            if sel.iter().copied().eq(top..top + n) {
+                return format!("Already at {}", range(top));
+            }
+            let len = rules.len;
+            let sv: Vec<usize> = sel.iter().copied().collect();
+            let mut order: Vec<usize> = (0..len).collect();
+            match shift_place(&mut order, &sv, top, rules.first, |&i| !occupied(i)) {
+                Some(_) => {
+                    // Samples that end up somewhere else, apart from the dragged ones.
+                    let pushed: Vec<usize> = order
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, o)| *i != **o && !sel.contains(o) && occupied(**o))
+                        .map(|(i, _)| i)
+                        .collect();
+                    match (pushed.first(), pushed.last()) {
+                        (Some(_), Some(&end)) => format!(
+                            "Insert at {} · {} pushed down to {}\n{other}",
+                            range(top),
+                            pushed.len(),
+                            label(end)
+                        ),
+                        _ => format!("Place at {}\n{other}", range(top)),
+                    }
+                }
+                None => format!(
+                    "Insert at {} · no empty slot below: slots in between shift\n{other}",
+                    range(top)
+                ),
+            }
+        }
         DropTarget::Place(top) => {
             let range = if n == 1 {
                 label(top)
@@ -256,7 +367,7 @@ pub fn paint_landing(ui: &egui::Ui, x: egui::Rangef, y: egui::Rangef, target: Dr
     let area = Rect::from_x_y_ranges(x, y);
     let p = ui.painter();
     match target {
-        DropTarget::Place(_) => {
+        DropTarget::Place(_) | DropTarget::Shift(_) => {
             p.rect_filled(area, 0.0, c.gamma_multiply(0.22));
             p.rect_stroke(area, 0.0, Stroke::new(1.0, c), egui::StrokeKind::Inside);
         }

@@ -6,9 +6,10 @@ impl ElekState {
     /// Put a new +Drive file into empty entry `old`, as an undoable edit.
     pub fn fill(&mut self, old: u16, e: PoolEntry) {
         self.filling.remove(&old);
-        self.undo.push((self.order.clone(), self.fills.clone()));
+        self.push_undo();
         self.fills.insert(old, e);
         self.edited_at = Some(std::time::Instant::now());
+        self.sync_saved_groups();
     }
     /// Cut (`cut`) or copy these slots (as ordered now); empty ones are
     /// left out. Their names also go on the system clipboard as text, which
@@ -150,20 +151,27 @@ impl ElekState {
     }
 
     /// Runs an edit of `order`, keeping the selection on the same samples and
-    /// recording undo when something changed.
+    /// recording undo when something changed. Groups the edit breaks keep
+    /// their longest packed run (`repair_groups`).
     pub(super) fn edit(&mut self, f: impl FnOnce(&mut Vec<u16>)) {
-        let before = self.order.clone();
-        let picked: HashSet<u16> = self.sel.iter().map(|&s| self.order[s]).collect();
-        let cur = self.cursor.map(|c| self.order[c]);
-        f(&mut self.order);
-        if self.order == before {
+        let mut order = self.order.clone();
+        f(&mut order);
+        let groups = self.repair_groups(&order);
+        self.commit(order, groups);
+    }
+
+    /// Takes a new order and groups as one undoable step, keeping the
+    /// selection and cursor on the same samples.
+    pub(super) fn commit(&mut self, order: Vec<u16>, groups: Vec<groups::Group>) {
+        if order == self.order && groups == self.groups {
             return;
         }
-        self.undo.push((before, self.fills.clone()));
+        let picked: HashSet<u16> = self.sel.iter().map(|&s| self.order[s]).collect();
+        let cur = self.cursor.map(|c| self.order[c]);
+        self.push_undo();
+        self.order = order;
+        self.groups = groups;
         self.edited_at = Some(std::time::Instant::now());
-        if self.undo.len() > 200 {
-            self.undo.remove(0);
-        }
         self.sel = self
             .order
             .iter()
@@ -173,14 +181,24 @@ impl ElekState {
             .collect();
         self.cursor = cur.and_then(|c| self.order.iter().position(|&o| o == c));
         self.reveal = self.cursor;
+        self.sync_saved_groups();
+    }
+
+    pub(super) fn push_undo(&mut self) {
+        self.undo.push(Undo { order: self.order.clone(), fills: self.fills.clone(), groups: self.groups.clone() });
+        if self.undo.len() > 200 {
+            self.undo.remove(0);
+        }
     }
 
     pub(super) fn undo(&mut self) {
-        if let Some((prev, fills)) = self.undo.pop() {
-            self.order = prev;
-            self.fills = fills;
+        if let Some(u) = self.undo.pop() {
+            self.order = u.order;
+            self.fills = u.fills;
+            self.groups = u.groups;
             self.status = "Undone".into();
             self.edited_at = Some(std::time::Instant::now());
+            self.sync_saved_groups();
         }
     }
 
@@ -203,45 +221,6 @@ impl ElekState {
         }
     }
 
-    /// Puts the selection into slots `to, to+1, …` (in selection order). What
-    /// was there goes to the slots the selection left, so nothing else moves:
-    /// dropping onto empty slots leaves empty slots behind.
-    pub(super) fn place_sel_at(&mut self, to: usize) {
-        let sel: Vec<usize> = self.sel.iter().copied().collect();
-        let n = self.order.len();
-        if sel.is_empty() {
-            return;
-        }
-        let to = to.clamp(1, n - sel.len());
-        let targets: Vec<usize> = (to..to + sel.len()).collect();
-        let sset: HashSet<usize> = sel.iter().copied().collect();
-        let displaced: Vec<usize> = targets
-            .iter()
-            .copied()
-            .filter(|t| !sset.contains(t))
-            .collect();
-        let occupied = displaced.iter().filter(|&&t| !self.is_empty_at(t)).count();
-        self.edit(|order| {
-            slot_list::place(order, &sel, to, 1);
-        });
-        let what = if sel.len() == 1 {
-            self.label(to)
-        } else {
-            format!("{}–{}", self.label(to), self.label(to + sel.len() - 1))
-        };
-        self.status = if occupied > 0 {
-            format!("Placed at {what}; {occupied} sample(s) there swapped into the old slots")
-        } else {
-            format!("Placed at {what}")
-        };
-    }
-
-    pub(super) fn is_empty_at(&self, slot: usize) -> bool {
-        self.project
-            .as_ref()
-            .is_some_and(|_| self.free(self.order[slot]))
-    }
-
     /// Shifts the selection one slot up (`-1`) or down (`+1`), as a block.
     pub(super) fn nudge(&mut self, dir: i32) {
         let sel: Vec<usize> = self.sel.iter().copied().collect();
@@ -259,6 +238,10 @@ impl ElekState {
     /// down; each one uses up the next empty slot further down.
     pub(super) fn insert_empty(&mut self, at: usize, n: usize) {
         if self.project.is_none() || n == 0 {
+            return;
+        }
+        if let Some(g) = self.group_at(at).filter(|&g| self.group_spans()[g].start != at) {
+            self.status = format!("Groups stay packed: insert above or below \"{}\"", self.groups[g].name);
             return;
         }
         let mut order = self.order.clone();
@@ -320,7 +303,7 @@ impl ElekState {
     pub(super) fn clear_olds(&mut self, olds: &[u16]) {
         let Some(p) = &self.project else { return };
         let was: Vec<bool> = olds.iter().map(|&o| p.pool[o as usize].is_empty()).collect();
-        self.undo.push((self.order.clone(), self.fills.clone()));
+        self.push_undo();
         self.edited_at = Some(std::time::Instant::now());
         for (&o, empty_as_read) in olds.iter().zip(was) {
             if empty_as_read {
@@ -330,6 +313,7 @@ impl ElekState {
                 self.fills.insert(o, PoolEntry::EMPTY);
             }
         }
+        self.close_freed_members();
     }
 
     /// Every non-empty slot nothing points at.

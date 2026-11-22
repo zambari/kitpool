@@ -361,7 +361,7 @@ impl App {
                     self.relaunch = true;
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                 }
-                Some(crate::ui::infobox::AboutIntent::PickDevice(name)) => self.device.pick(name),
+                Some(crate::ui::infobox::AboutIntent::PickDevice(name)) => self.use_unit(name),
                 None => {}
             }
 
@@ -462,6 +462,11 @@ impl App {
                 a.label.as_str()
             } else {
                 "Starting…"
+            };
+            // Several units: say which one the job is on.
+            let label = match &a.unit {
+                Some(u) if device::units().len() > 1 => format!("{} · {label}", device::short_name(u)),
+                _ => label.to_owned(),
             };
             // Average rate over the run so far times the bytes still to go.
             // Wait a few seconds so the first file's ramp-up doesn't skew it.

@@ -10,15 +10,8 @@ impl App {
                 ElekIntent::BackToEditor => {
                     self.elek_mode = false;
                 }
-                ElekIntent::ToggleDevice => self.toggle_device(),
+                ElekIntent::DeviceRow(pick) => self.device_row_pick(pick),
                 ElekIntent::Dock => self.dock_elek(),
-                // Picked from the top tabs, +Drive is a place of its own
-                // like Samples / Patterns: the editor in the centre, the
-                // +Drive on the right.
-                ElekIntent::ShowDrive => {
-                    self.elek_mode = false;
-                    self.show_drive();
-                }
                 ElekIntent::Undock => {
                     self.elek.page = elek_view::ElekPage::Order;
                     self.enter_full_elek();

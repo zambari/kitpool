@@ -265,14 +265,37 @@ pub const DEVICE_ABSENT_OPACITY: f32 = 0.35;
 /// reason to its hover text. Still clickable: a project from a file, or
 /// tabs already listed, are worth looking at offline.
 pub fn device_dimmed<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
-    let presence = crate::device::presence();
+    dimmed_unless(ui, crate::device::presence().available(), add)
+}
+
+/// `add`, faded like an absent device unless `available`.
+fn dimmed_unless<R>(ui: &mut egui::Ui, available: bool, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     ui.scope(|ui| {
-        if !presence.available() {
+        if !available {
             ui.multiply_opacity(DEVICE_ABSENT_OPACITY);
         }
         add(ui)
     })
     .inner
+}
+
+/// How a unit's row should look: plugged in and not switched off, and
+/// its link's last news. `None` is the row shown while none is plugged in.
+pub struct UnitLook {
+    pub available: bool,
+    pub off: bool,
+    pub status: Option<Result<String, String>>,
+}
+
+impl UnitLook {
+    pub fn of(unit: Option<&str>) -> Self {
+        let Some(u) = unit else {
+            return Self { available: false, off: false, status: None };
+        };
+        let off = crate::device::unit_off(u);
+        let present = crate::device::units().iter().any(|n| n == u) || crate::device::presence() == crate::device::Presence::Unknown;
+        Self { available: present && !off, off, status: crate::device::unit_connection(u) }
+    }
 }
 
 /// The darker rounded box that holds the Device switch and its Samples /
@@ -287,33 +310,43 @@ pub fn device_group<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) 
         .inner
 }
 
-/// The "🎹 DEVICE" mode switch, shared by the editor's header and the
-/// Device view's own. Faded while no device is plugged in; with more than
-/// one plugged in, shows a warning mark in the error colour.
-pub fn device_switch(ui: &mut egui::Ui, active: bool, focused: bool) -> egui::Response {
-    let presence = crate::device::presence();
-    let label = device_label("Device");
-    let status = crate::device::connection_status();
-    let connected = matches!(status, Some(Ok(_))) && presence.available();
-    let failed = matches!(status, Some(Err(_))) && presence.available();
-    let mut resp = device_dimmed(ui, |ui| ui.add(accent_title(&label, active, focused, connected, DEVICE_ACCENT, DEVICE_ACCENT_BRIGHT)));
-    if failed || matches!(presence, crate::device::Presence::Many(_)) {
+/// A unit's name as the switch at the start of its device row, shared by
+/// the editor's header and the Device view's own: "🎹 DEVICE" while none is
+/// plugged in. Faded while the unit isn't plugged in; lit while connected.
+/// `shown`: the unit the app shows; `active` / `focused` as [`mode_title`]
+/// (only ever for the shown unit).
+pub fn device_switch(ui: &mut egui::Ui, unit: Option<&str>, shown: bool, active: bool, focused: bool) -> egui::Response {
+    let look = UnitLook::of(unit);
+    let label = device_label(unit.map_or("Device", crate::device::short_name));
+    let connected = matches!(look.status, Some(Ok(_))) && look.available;
+    // Only the shown unit's name lights up, so it reads as the one in use.
+    let lit = connected && shown;
+    let failed = matches!(look.status, Some(Err(_))) && look.available;
+    let mut resp = dimmed_unless(ui, look.available, |ui| {
+        ui.add(accent_title(&label, active, focused, lit, DEVICE_ACCENT, DEVICE_ACCENT_BRIGHT))
+    });
+    if failed {
         let err = ui.visuals().error_fg_color;
         resp |= ui.label(egui::RichText::new("⚠").color(err).strong());
-    }
-    if failed {
-        resp |= ui.label(egui::RichText::new("NOT CONNECTED").small().color(ui.visuals().error_fg_color));
-        if let Some(Err(why)) = status {
+        resp |= ui.label(egui::RichText::new("NOT CONNECTED").small().color(err));
+        if let Some(Err(why)) = &look.status {
             resp = resp.on_hover_text(why);
         }
     }
-    if presence == crate::device::Presence::Off {
+    if look.off {
         resp |= ui.label(egui::RichText::new("OFF").font(oled_font(10.0)).weak());
     }
-    if let Some(why) = presence.problem() {
-        resp = resp.on_hover_text(why);
-    }
-    if presence != crate::device::Presence::Off {
+    if unit.is_none() {
+        if let Some(why) = crate::device::Presence::Absent.problem() {
+            resp = resp.on_hover_text(why);
+        }
+    } else if !shown {
+        resp = resp.on_hover_text("Click to show this device here. Whatever the other one is doing keeps running.");
+    } else if look.off {
+        if let Some(why) = crate::device::Presence::Off.problem() {
+            resp = resp.on_hover_text(why);
+        }
+    } else {
         resp = resp.on_hover_text("Click to switch the device off: closes its panels and MIDI ports so another app (a DAW) can use it.");
     }
     resp

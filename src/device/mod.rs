@@ -1,9 +1,12 @@
 //! An Elektron machine's +Drive (Digitakt, Digitakt II, Analog Rytm,
 //! Model:Samples), browsed over USB MIDI.
 //!
-//! One worker thread owns the MIDI connection and runs every request in
-//! order: the device answers one API call at a time, so there is nothing to
-//! gain from parallel requests and a lot to lose. The UI posts [`Cmd`]s and
+//! Each unit plugged in gets its own worker thread, which owns that unit's
+//! MIDI connection and runs its requests in order: a device answers one API
+//! call at a time, so there is nothing to gain from parallel requests to
+//! one unit and a lot to lose. Requests go to the active unit
+//! ([`active_unit`]); switching leaves the other's queue running, and its
+//! events come back tagged ([`Ev::FromUnit`]). The UI posts [`Cmd`]s and
 //! gets results back as ordinary [`crate::jobs::Ev`]s. While a job runs, the
 //! worker answers folder listings between its steps (down to single transfer
 //! chunks) and read-only preset / project browser requests so browsing
@@ -17,7 +20,7 @@ mod conn;
 mod elek;
 pub use elek::{file, library, machines, patterns, presets, preset_file, Cell, DumpMsg, ElekCmd, ElekEv, ElekProject, PatState, PoolEntry, ReadCtl, ReadFirst, SavedProject};
 mod presence;
-pub use presence::{MidiPorts, Presence, connection_status, midi_ports, picked, presence, start as watch_presence, switched_off};
+pub use presence::{MidiPorts, Presence, active_unit, midi_ports, presence, short_name, start as watch_presence, switched_off, unit_busy, unit_connection, unit_off, units};
 mod proto;
 pub(crate) mod sample;
 mod transfer;
@@ -103,67 +106,92 @@ enum Cmd {
     Elek(ElekCmd),
     /// Close the MIDI ports (the device was switched off).
     Release,
-    /// Drop the link quietly; the next request opens the picked unit.
-    Repick,
 }
 
+/// The device workers, one per unit (by MIDI input name), started when a
+/// unit is first asked for something. `None` is the worker used while no
+/// unit is plugged in: it answers every request with "not found".
 pub struct Device {
-    tx: Sender<Cmd>,
+    em: Emitter,
+    workers: std::cell::RefCell<HashMap<Option<String>, Sender<Cmd>>>,
 }
 
 impl Device {
     pub fn new(em: Emitter) -> Self {
-        let (tx, rx) = channel();
-        let _ = std::thread::Builder::new()
-            .name("device".into())
-            .spawn(move || {
-                Worker {
-                    conn: None,
-                    em,
-                    job: None,
-                    rx,
-                    later: VecDeque::new(),
-                    counted: HashMap::new(),
-                    counting: false,
-                    busy: Vec::new(),
-                    held: VecDeque::new(),
-                    redirects: Vec::new(),
-                    merged: (0, 0, 0),
-                }
-                .run()
-            });
-        Self { tx }
+        Self { em, workers: Default::default() }
+    }
+
+    /// Queue `cmd` on `unit`'s worker, starting it if needed.
+    fn send_to(&self, unit: Option<String>, cmd: Cmd) {
+        let mut workers = self.workers.borrow_mut();
+        let tx = workers.entry(unit.clone()).or_insert_with(|| spawn_worker(unit, &self.em));
+        let _ = tx.send(cmd);
+    }
+
+    fn send(&self, cmd: Cmd) {
+        presence::ensure_scanned();
+        self.send_to(active_unit(), cmd);
     }
 
     pub fn list(&self, path: PathBuf, generation: u64) {
-        let _ = self.tx.send(Cmd::List { path, generation });
+        self.send(Cmd::List { path, generation });
     }
 
     pub fn run(&self, job: u64, cancel: Arc<AtomicBool>, task: Task) {
-        let _ = self.tx.send(Cmd::Job { job, cancel, task });
+        self.send(Cmd::Job { job, cancel, task });
     }
 
     /// Project dump work (see [`elek`]): runs in turn with other jobs.
     pub fn elek(&self, cmd: ElekCmd) {
-        let _ = self.tx.send(Cmd::Elek(cmd));
+        self.send(Cmd::Elek(cmd));
     }
 
-    /// Switch the device off or on. Off closes the MIDI ports and refuses
-    /// every request until it is switched on again.
+    /// Switch the active unit off or on. Off closes its MIDI ports and
+    /// refuses every request until it is switched on again.
     pub fn switch_off(&self, off: bool) {
-        presence::set_off(off);
+        let Some(unit) = active_unit() else { return };
+        presence::set_off(&unit, off);
         if off {
-            let _ = self.tx.send(Cmd::Release);
+            self.send_to(Some(unit), Cmd::Release);
         }
     }
 
-    /// Use the unit on MIDI input `name` (one of [`MidiPorts::devices`])
-    /// for the rest of this run. Call only while no job runs: a job parks
-    /// this until it is done.
-    pub fn pick(&self, name: String) {
-        let _ = self.tx.send(Cmd::Repick);
-        presence::pick(name);
+    /// Show and talk to `unit` (one of [`units`]) from now on. Its worker
+    /// keeps its own link and queue, as does the one left.
+    pub fn activate(&self, unit: String) {
+        crate::log::line(format!("device: active unit {unit}"));
+        presence::set_active(Some(unit));
     }
+
+    /// Send requests to `unit` for a moment, without the UI switching
+    /// (the app applying a parked unit's events); put back afterwards.
+    pub fn route_to(&self, unit: Option<String>) {
+        presence::set_active(unit);
+    }
+}
+
+fn spawn_worker(unit: Option<String>, em: &Emitter) -> Sender<Cmd> {
+    let (tx, rx) = channel();
+    let em = em.for_unit(unit.clone());
+    let name = format!("device {}", unit.as_deref().unwrap_or("(none)"));
+    let _ = std::thread::Builder::new().name(name).spawn(move || {
+        Worker {
+            unit,
+            conn: None,
+            em,
+            job: None,
+            rx,
+            later: VecDeque::new(),
+            counted: HashMap::new(),
+            counting: false,
+            busy: Vec::new(),
+            held: VecDeque::new(),
+            redirects: Vec::new(),
+            merged: (0, 0, 0),
+        }
+        .run()
+    });
+    tx
 }
 
 /// What can go wrong talking to the device. A link error drops the

@@ -354,7 +354,7 @@ impl App {
             Presence::Off => {
                 self.device_status = Some(Err("Switched off".into()));
             }
-            Presence::One(name) if matches!(before, Presence::Absent | Presence::Many(_) | Presence::Off)
+            Presence::One(name) if matches!(before, Presence::Absent | Presence::Off)
                 // Swapped so fast no scan saw the cable empty.
                 || matches!(&before, Presence::One(b) if *b != name) =>
             {
@@ -401,25 +401,23 @@ impl App {
             return;
         }
         let resp = resp.interact(egui::Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
-        let idle = self.active_jobs.is_empty();
         let mut pick = None;
         egui::Popup::menu(&resp).show(|ui| {
-            ui.label(egui::RichText::new("Use device").small().weak());
-            pick = crate::ui::infobox::device_picker(ui, &ports, idle);
+            ui.label(egui::RichText::new("Show device").small().weak());
+            pick = crate::ui::infobox::device_picker(ui, &ports);
             if pick.is_some() {
                 ui.close();
             }
         });
         if let Some(name) = pick {
-            self.device.pick(name);
+            self.use_unit(name);
         }
     }
 
     fn device_badge_label(&mut self, ui: &mut egui::Ui) -> egui::Response {
         if let Some(tip) = crate::device::presence().problem() {
-            let many = matches!(crate::device::presence(), crate::device::Presence::Many(_));
             let off = crate::device::presence() == crate::device::Presence::Off;
-            let text = if many { "⚠ several devices" } else if off { "○ switched off" } else { "● disconnected" };
+            let text = if off { "○ switched off" } else { "● disconnected" };
             return ui
                 .label(egui::RichText::new(text).color(ui.visuals().error_fg_color).small())
                 .on_hover_text(tip);

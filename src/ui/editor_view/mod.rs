@@ -70,13 +70,8 @@ pub enum EdIntent {
     SwitchKit(usize),
     /// Start another kit from the sample's selection.
     NewKit,
-    /// The DEVICE switch: close the device panels and its MIDI ports, or
-    /// connect again.
-    ToggleDevice,
-    /// Open the Device view on this page (Samples / Patterns).
-    DevicePage(crate::ui::elek_view::ElekPage),
-    /// The +Drive tab next to Patterns: show the +Drive in the right column.
-    ShowDrive,
+    /// A click in a device row (see [`crate::ui::elek_view::device_row`]).
+    DeviceRow(crate::ui::elek_view::RowPick),
     /// Fade and cut every kit slice's tail below the threshold.
     TrimTails,
     /// Upload what you hear as a new file next to its device original.

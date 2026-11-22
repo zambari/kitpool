@@ -82,6 +82,9 @@ pub struct AppState {
     /// Pattern banks folded out in the Device view (A to H).
     #[serde(default = "default_open_banks")]
     pub device_open_banks: [bool; 8],
+    /// Sample groups per unit (MIDI port name).
+    #[serde(default)]
+    pub pool_groups: std::collections::BTreeMap<String, Vec<PoolGroup>>,
 }
 
 fn default_open_banks() -> [bool; 8] {
@@ -94,6 +97,14 @@ fn default_kit_grid() -> Option<usize> {
 
 fn default_focus() -> Role {
     Role::Source
+}
+
+/// A sample group (see `ui::elek_view::groups`), by the +Drive hashes of
+/// its samples, top to bottom.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+pub struct PoolGroup {
+    pub name: String,
+    pub keys: Vec<(u32, u32)>,
 }
 
 pub fn load(storage: Option<&dyn eframe::Storage>) -> Option<AppState> {

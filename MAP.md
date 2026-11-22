@@ -16,7 +16,7 @@ control→function tables are in [MAP_full.md](MAP_full.md) (not maintained).
   (file panes), `App::show_editor` (`app/editing.rs`), `App::elek_intents`
   (`app/elek/commands.rs`).
 - `src/editor/*`, `src/audio/*`: editor model and DSP. No egui in `audio`.
-- `src/device/*`: one worker thread owns the MIDI link.
+- `src/device/*`: one worker thread per unit owns that unit's MIDI link.
 - **`ui()` never does I/O.** Post a request, draw from cached state.
 - **Everything a worker produces comes back as a `jobs::Ev`**, handled in
   `App::absorb` (`app/transfers.rs`); device-project answers go on to
@@ -29,7 +29,8 @@ control→function tables are in [MAP_full.md](MAP_full.md) (not maintained).
 
 - Local work: one detached thread per request (`Jobs::spawn` in `src/jobs.rs`).
   Not a queue.
-- **Device queue**: one thread (`Worker::run`, `src/device/worker.rs`). Writes
+- **Device queue**: one thread per unit (`Worker::run`, `src/device/worker.rs`;
+  `Device` routes to the active unit's). Writes
   keep their order; read-only browser requests may jump ahead between steps
   (`jumps_queue`). Renaming a folder that queued jobs use rewrites their paths
   (`redirect_queue`, `Worker::redirects`). Retries, timeouts and chunk size are
@@ -69,14 +70,21 @@ control→function tables are in [MAP_full.md](MAP_full.md) (not maintained).
 - **Saved projects on +Drive are never written** (`proto::FORBIDDEN`). Only
   device memory is pushed. Preset uploads are limited to exact preset paths
   (`allowed_write`).
-- **Device off ≠ unplugged.** The DEVICE switch closes ports and stops the
-  presence scan so a DAW can use the device (`Presence::Off`); unplugging folds
-  the same panels but keeps scanning. Reconnect may be a different unit
-  (`App::last_unit`), which drops the old project.
-- **Several units plugged in**: the user picks one per run (device badge menu
-  or the About box's MIDI panel → `Device::pick`). Not saved. A unit is its
-  MIDI input name, paired with the output of the same name. The picked port
-  makes the scan report `One(pick)`; unplugging it clears the pick.
+- **Device off ≠ unplugged.** Clicking the shown unit's name in its device row
+  closes its ports so a DAW can use it (`Presence::Off`, per unit); unplugging
+  folds the same panels. Reconnect may be a different unit (`App::last_unit`),
+  which drops the old project.
+- **Several units plugged in** (`app/units.rs`): one device row each under the
+  Sample Editor / Device title (`device_row`, `device_rows_below`). One unit is
+  *active* (`device::active_unit`): shown, and sent every request. Each unit has
+  its own worker, so switching never waits. The active unit's share of `App`
+  (project, page, pool edit, +Drive folders...) is swapped with a parked
+  `UnitCtx`; **a field that belongs to one unit goes in the `unit_state!` list**.
+  Worker events come back as `Ev::FromUnit`; a parked unit's are applied with its
+  state swapped in (`App::in_unit`, `App::background` set: shown tabs left alone).
+  Carry-over copies (`xclip`, `xtrack_*`, `pool_clip`) follow the user across
+  (`ProjEd::carry_copies`); +Drive file paste across units is refused. A unit is
+  its MIDI input name; two units with the same port name show as one.
 - A read stopped before the sound pool arrives leaves `sounds_read` false and
   **blocks pool pushes** (`ElekState::pool_pushable`), because pool pushes
   renumber sound locks in every pattern.
@@ -111,9 +119,22 @@ control→function tables are in [MAP_full.md](MAP_full.md) (not maintained).
 - Tooltips don't show mid-drag; use `theme::pointer_note`.
 - **Slot drags share one path** in `slot_list` (`Grab`, `drop_target_rows`,
   `landing_note`, `paint_landing` after all rows, `drag_autoscroll`); each
-  list passes `DropRules`. Samples default to swap-in-place (patterns point
-  at slots, so swaps move the fewest); presets default to insert (they're
-  copies, order is free). ⌥/⌃ flips either. Presets also map filtered rows
+  list passes `DropRules` (`PlainDrop`). Samples default to a push-down
+  insert (`DropTarget::Shift`, `shift_place`): what's under the block moves
+  down only as far as the next empty slots, falling back to a full insert
+  when there's no room. Presets default to insert (they're copies, order is
+  free). ⌥/⌃ swaps in place in both. The sample list doesn't use the
+  shared target for the drop itself: it builds a `SlotDrop` in
+  `slot_landing` and works it out with `ElekState::plan`, which knows groups.
+- **Sample groups** (`ui/elek_view/groups.rs`) exist only in this app:
+  named runs of adjacent samples in one bank, always packed, moving as one
+  (dashed frame, name tab; drag by tab or frame sides). Every slot drop is
+  planned first and refused if it would split a group or push one past its
+  bank's end. Edits that don't know about groups go through `edit`, whose
+  `repair_groups` keeps each group's longest packed run. Saved per unit
+  (MIDI port name) by +Drive hash in `AppState::pool_groups`, synced by
+  `App::sync_pool_groups`; a project gets a group back when those samples
+  sit packed in one bank. Presets also map filtered rows
   through `RowHit::slot_of` and warn about locked slots.
 - Device status and copy/paste feedback goes to the bottom status bar, not to
   banners above lists.

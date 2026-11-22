@@ -26,7 +26,7 @@ pub(super) struct Conn {
 impl Drop for Conn {
     /// The ports close with the connection.
     fn drop(&mut self) {
-        super::presence::set_claimed(None);
+        super::presence::set_claimed(&self.port, None);
     }
 }
 
@@ -92,37 +92,24 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(60);
 const HANDSHAKE_RETRY_EVERY: Duration = Duration::from_secs(5);
 
 impl Conn {
-    /// The unit the user picked, or else each Elektron-looking port in
-    /// turn; the first that answers and has a sample drive wins.
-    pub(super) fn open() -> Result<Self, String> {
-        let input = midir::MidiInput::new("KitPool").map_err(|e| e.to_string())?;
-        let names: Vec<String> = input
-            .ports()
-            .iter()
-            .filter_map(|p| input.port_name(p).ok())
-            .filter(|n| elektron_port(n))
-            .filter(|n| super::presence::picked().is_none_or(|p| p == **n))
-            .collect();
-        drop(input);
-        if names.is_empty() {
+    /// Open `unit` (a MIDI input name from the presence scan); `None`
+    /// when no unit is plugged in.
+    pub(super) fn open(unit: Option<&str>) -> Result<Self, String> {
+        let Some(name) = unit else {
             return Err("No Elektron device found. Connect it by USB \
                         (USB config: Overbridge or USB MIDI) and press Refresh."
                 .into());
-        }
-        let mut last = String::new();
-        for name in names {
-            match Self::open_port(&name) {
-                Ok(c) => {
-                    crate::log::line(format!("device: connected to {} on port {name}", c.name));
-                    return Ok(c);
-                }
-                Err(e) => {
-                    crate::log::line(format!("device: port {name}: {e}"));
-                    last = e;
-                }
+        };
+        match Self::open_port(name) {
+            Ok(c) => {
+                crate::log::line(format!("device: connected to {} on port {name}", c.name));
+                Ok(c)
+            }
+            Err(e) => {
+                crate::log::line(format!("device: port {name}: {e}"));
+                Err(e)
             }
         }
-        Err(last)
     }
 
     pub(super) fn open_port(in_name: &str) -> Result<Self, String> {
@@ -186,7 +173,7 @@ impl Conn {
             .map_err(|e| format!("Detected {in_name}, but could not open its MIDI output. A DAW or another MIDI app may be using it. Disable this device in that app or close the app, then click Retry connection. MIDI output: {e}"))?;
 
         // Both ports are open from here; `Drop` clears this again.
-        super::presence::set_claimed(Some((in_name.to_owned(), out_name)));
+        super::presence::set_claimed(in_name, Some((in_name.to_owned(), out_name)));
         let mut c = Self {
             out,
             _input,
@@ -283,7 +270,7 @@ impl Conn {
         let mut retry_at = Instant::now() + HANDSHAKE_RETRY_EVERY;
         loop {
             if handshake {
-                if super::switched_off() {
+                if super::presence::unit_off(&self.port) {
                     return Err(Fail::Link("Device switched off".into()));
                 }
                 if !self.probe() {
@@ -304,7 +291,7 @@ impl Conn {
                 Ok(msg) => msg,
                 Err(RecvTimeoutError::Timeout) => {
                     if handshake && Instant::now() >= retry_at && Instant::now() < deadline {
-                        if super::switched_off() {
+                        if super::presence::unit_off(&self.port) {
                             return Err(Fail::Link("Device switched off".into()));
                         }
                         if !self.probe() {

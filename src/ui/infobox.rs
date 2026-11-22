@@ -50,7 +50,7 @@ pub fn show(
             ui.hyperlink(env!("CARGO_PKG_REPOSITORY"));
             ui.hyperlink(env!("CARGO_PKG_HOMEPAGE"));
             ui.add_space(8.0);
-            if let Some(name) = midi_ports(ui, &ports(), can_reset) {
+            if let Some(name) = midi_ports(ui, &ports()) {
                 out = Some(AboutIntent::PickDevice(name));
             }
             ui.add_space(4.0);
@@ -65,22 +65,15 @@ pub fn show(
     out
 }
 
-/// The Elektron units plugged in, one button each, the one in use
-/// highlighted. Returns the one clicked. `enabled` is false while a
-/// transfer runs.
-pub fn device_picker(ui: &mut egui::Ui, p: &crate::device::MidiPorts, enabled: bool) -> Option<String> {
-    let current = p
-        .claimed
-        .as_ref()
-        .map(|(i, _)| i.clone())
-        .or_else(crate::device::picked);
+/// The Elektron units plugged in, one button each, the one shown
+/// highlighted. Returns the one clicked. Switching never waits: each unit
+/// keeps its own jobs running.
+pub fn device_picker(ui: &mut egui::Ui, p: &crate::device::MidiPorts) -> Option<String> {
+    let current = crate::device::active_unit();
     let mut out = None;
     for n in &p.devices {
         let using = current.as_deref() == Some(n.as_str());
-        let resp = ui
-            .add_enabled(enabled, egui::Button::selectable(using, n))
-            .on_disabled_hover_text("Wait for the transfer to finish");
-        if resp.clicked() && !using {
+        if ui.add(egui::Button::selectable(using, n)).clicked() && !using {
             out = Some(n.clone());
         }
     }
@@ -90,7 +83,7 @@ pub fn device_picker(ui: &mut egui::Ui, p: &crate::device::MidiPorts, enabled: b
 /// Inputs and outputs side by side, small, in a darker inset box so the
 /// version and links above stay the popup's main content. With several
 /// units plugged in, a picker above them; returns the unit clicked.
-fn midi_ports(ui: &mut egui::Ui, p: &crate::device::MidiPorts, can_pick: bool) -> Option<String> {
+fn midi_ports(ui: &mut egui::Ui, p: &crate::device::MidiPorts) -> Option<String> {
     let mut picked = None;
     let (used_in, used_out) = match &p.claimed {
         Some((i, o)) => (Some(i.as_str()), Some(o.as_str())),
@@ -120,7 +113,7 @@ fn midi_ports(ui: &mut egui::Ui, p: &crate::device::MidiPorts, can_pick: bool) -
             ui.set_width(ui.available_width());
             if p.devices.len() > 1 {
                 ui.label(egui::RichText::new("Elektron devices").size(MIDI_TEXT).strong());
-                ui.horizontal_wrapped(|ui| picked = device_picker(ui, p, can_pick));
+                ui.horizontal_wrapped(|ui| picked = device_picker(ui, p));
                 ui.add_space(8.0);
             }
             ui.columns(2, |cols| {
@@ -130,7 +123,7 @@ fn midi_ports(ui: &mut egui::Ui, p: &crate::device::MidiPorts, can_pick: bool) -
             if crate::device::switched_off() {
                 ui.add_space(8.0);
                 ui.label(
-                    egui::RichText::new("Device switched off: ports aren't rescanned until it's back on.")
+                    egui::RichText::new("Device switched off: its ports are closed so another app can use them.")
                         .size(MIDI_TEXT)
                         .weak(),
                 );

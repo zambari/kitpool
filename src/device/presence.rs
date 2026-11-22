@@ -5,17 +5,18 @@
 //!
 //! This only looks at port names; it never talks to the device.
 //!
-//! With more than one plugged in, the user picks one for this run
-//! ([`pick`]); the scan then reports only that one, and other units are
-//! listed in [`MidiPorts::devices`] to switch to. Not saved: a fresh launch
-//! starts unpicked again.
+//! Every unit plugged in is listed ([`units`]); one of them is *active*
+//! ([`active_unit`]): the one the app shows and sends requests to.
+//! [`presence`] describes the active one. Each unit has its own worker and
+//! link (see [`super::Device`]), so switching leaves the other one's jobs
+//! running. Not saved: a fresh launch starts on the first unit.
 //!
-//! The user can also switch the device off (the DEVICE switch): then
-//! [`presence`] says [`Presence::Off`], the scan stops, and the worker
+//! The user can also switch a unit off (the switch on its name): then
+//! [`presence`] says [`Presence::Off`] while it is active, and its worker
 //! drops its MIDI ports, so a DAW can have the device to itself.
 
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::collections::{HashMap, HashSet};
+use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
 const SCAN_EVERY: Duration = Duration::from_secs(2);
@@ -28,12 +29,9 @@ pub enum Presence {
     Unknown,
     /// No Elektron-looking MIDI port.
     Absent,
-    /// Exactly one, by port name.
+    /// The active unit is plugged in, by port name.
     One(String),
-    /// More than one: we can't yet tell which one the user means.
-    Many(Vec<String>),
-    /// Switched off by the user: no scan, no connection, until switched
-    /// back on.
+    /// Switched off by the user: no connection, until switched back on.
     Off,
 }
 
@@ -51,13 +49,9 @@ impl Presence {
                  this is checked every 2 seconds."
                     .into(),
             ),
-            Presence::Many(names) => Some(format!(
-                "More than one Elektron device is connected ({}). Click to choose which one to use.",
-                names.join(", ")
-            )),
             Presence::Off => Some(
                 "Device switched off: no MIDI connection, so other apps (a DAW) can use it. \
-                 Click DEVICE to connect again."
+                 Click its name to connect again."
                     .into(),
             ),
             _ => None,
@@ -65,47 +59,82 @@ impl Presence {
     }
 }
 
-static STATE: Mutex<Presence> = Mutex::new(Presence::Unknown);
-// Port discovery alone does not establish that the device can communicate.
-static CONNECTION: Mutex<Option<Result<String, String>>> = Mutex::new(None);
-
-pub fn connection_status() -> Option<Result<String, String>> {
-    CONNECTION.lock().ok().and_then(|s| s.clone())
+/// Everything the scan and the workers know about the units, by MIDI
+/// input name.
+#[derive(Default)]
+struct Units {
+    /// A scan has finished.
+    scanned: bool,
+    /// Elektron-looking inputs at the last scan, sorted.
+    present: Vec<String>,
+    /// The unit the app shows and sends requests to.
+    active: Option<String>,
+    /// Units switched off by the user.
+    off: HashSet<String>,
+    /// Units whose worker is busy with a job (see [`unit_busy`]).
+    busy: HashSet<String>,
+    /// Port discovery alone does not establish that the device can
+    /// communicate: each worker's last word on its link.
+    connection: HashMap<String, Result<String, String>>,
+    /// Input and output each worker has open.
+    claimed: HashMap<String, (String, String)>,
+    /// Every MIDI input and output at the last scan, for the About box.
+    ports: (Vec<String>, Vec<String>),
 }
 
-pub(super) fn set_connection_status(status: Result<String, String>) {
-    if let Ok(mut s) = CONNECTION.lock() {
-        *s = Some(status);
-    }
+static UNITS: LazyLock<Mutex<Units>> = LazyLock::new(Default::default);
+
+fn with<T>(f: impl FnOnce(&mut Units) -> T) -> T {
+    let mut u = UNITS.lock().unwrap_or_else(|e| e.into_inner());
+    f(&mut u)
 }
 
-static OFF: AtomicBool = AtomicBool::new(false);
-
-/// The unit picked among several, by MIDI input name. Run-only.
-static PICK: Mutex<Option<String>> = Mutex::new(None);
-
-/// The unit the user picked, if any (and still plugged in at the last scan).
-pub fn picked() -> Option<String> {
-    PICK.lock().ok().and_then(|p| p.clone())
+/// `unit`'s link: its name, or why there is none.
+pub fn unit_connection(unit: &str) -> Option<Result<String, String>> {
+    with(|u| u.connection.get(unit).cloned())
 }
 
-/// Use the unit on input `name` from now on. The caller tells the worker
-/// to drop its current link; the rescan here makes the switch visible this
-/// frame, so the app reloads device tabs as for a swapped unit.
-pub(super) fn pick(name: String) {
-    crate::log::line(format!("device: picked {name}"));
-    if let Ok(mut p) = PICK.lock() {
-        *p = Some(name);
-    }
-    if let Ok(mut s) = CONNECTION.lock() {
-        *s = None;
-    }
-    if !switched_off() {
-        let now = scan();
-        if let Ok(mut s) = STATE.lock() {
-            *s = now;
+pub(super) fn set_connection_status(unit: &str, status: Result<String, String>) {
+    with(|u| u.connection.insert(unit.to_owned(), status));
+}
+
+/// The unit the app shows and sends requests to, if any.
+pub fn active_unit() -> Option<String> {
+    with(|u| u.active.clone())
+}
+
+/// Elektron-looking units at the last scan, sorted by port name.
+pub fn units() -> Vec<String> {
+    with(|u| u.present.clone())
+}
+
+/// Make `unit` the one requests go to. Its worker keeps its own link, so
+/// the unit left keeps whatever it was doing.
+pub(super) fn set_active(unit: Option<String>) {
+    with(|u| u.active = unit);
+}
+
+/// `unit`'s worker is running a job or project read (and has more
+/// queued), for the device rows.
+pub fn unit_busy(unit: &str) -> bool {
+    with(|u| u.busy.contains(unit))
+}
+
+/// Whether that changed anything.
+pub(super) fn set_busy(unit: &str, busy: bool) -> bool {
+    with(|u| {
+        if busy {
+            u.busy.insert(unit.to_owned())
+        } else {
+            u.busy.remove(unit)
         }
-    }
+    })
+}
+
+/// A unit's name for the UI: its port name without the maker.
+pub fn short_name(unit: &str) -> &str {
+    let t = unit.trim();
+    t.strip_prefix("Elektron ").unwrap_or(t)
 }
 
 /// Every MIDI port name seen by the last scan, for the About box.
@@ -113,65 +142,69 @@ pub(super) fn pick(name: String) {
 pub struct MidiPorts {
     pub inputs: Vec<String>,
     pub outputs: Vec<String>,
-    /// The input and output the device worker has open, if any.
+    /// The input and output the active unit's worker has open, if any.
     pub claimed: Option<(String, String)>,
     /// Elektron-looking inputs, one per unit; each pairs with the output of
     /// the same name (`Conn::open_port`).
     pub devices: Vec<String>,
 }
 
-static PORTS: Mutex<(Vec<String>, Vec<String>)> = Mutex::new((Vec::new(), Vec::new()));
-static CLAIMED: Mutex<Option<(String, String)>> = Mutex::new(None);
-
-/// All MIDI ports from the last scan (the scan pauses while switched off),
-/// and the ones in use.
+/// All MIDI ports from the last scan, and the ones in use.
 pub fn midi_ports() -> MidiPorts {
-    let (inputs, outputs) = PORTS.lock().map(|p| p.clone()).unwrap_or_default();
-    let mut devices: Vec<String> = inputs.iter().filter(|n| super::conn::elektron_port(n)).cloned().collect();
-    devices.sort();
-    devices.dedup();
-    MidiPorts {
-        devices,
-        inputs,
-        outputs,
-        claimed: CLAIMED.lock().ok().and_then(|c| c.clone()),
-    }
+    with(|u| MidiPorts {
+        devices: u.present.clone(),
+        inputs: u.ports.0.clone(),
+        outputs: u.ports.1.clone(),
+        claimed: u.active.as_ref().and_then(|a| u.claimed.get(a).cloned()),
+    })
 }
 
-/// The worker opened (`Some`) or closed (`None`) its ports.
-pub(super) fn set_claimed(ports: Option<(String, String)>) {
-    if let Ok(mut c) = CLAIMED.lock() {
-        *c = ports;
-    }
+/// `unit`'s worker opened (`Some`) or closed (`None`) its ports.
+pub(super) fn set_claimed(unit: &str, ports: Option<(String, String)>) {
+    with(|u| match ports {
+        Some(p) => u.claimed.insert(unit.to_owned(), p),
+        None => u.claimed.remove(unit),
+    });
 }
 
-/// The latest scan, or [`Presence::Off`] while switched off.
+/// The active unit, as the UI should treat it.
 pub fn presence() -> Presence {
-    if switched_off() {
-        return Presence::Off;
-    }
-    STATE.lock().map(|s| s.clone()).unwrap_or_default()
-}
-
-/// The user switched the device off.
-pub fn switched_off() -> bool {
-    OFF.load(Ordering::Relaxed)
-}
-
-/// Switch the device off (stop scanning; the caller tells the worker to
-/// let go of the ports) or back on (scan right away, so the answer is
-/// fresh this frame).
-pub fn set_off(off: bool) {
-    OFF.store(off, Ordering::Relaxed);
-    if let Ok(mut s) = CONNECTION.lock() {
-        *s = None;
-    }
-    crate::log::line(format!("device: switched {}", if off { "off" } else { "on" }));
-    if !off {
-        let now = scan();
-        if let Ok(mut s) = STATE.lock() {
-            *s = now;
+    with(|u| {
+        if !u.scanned {
+            return Presence::Unknown;
         }
+        match &u.active {
+            Some(a) if u.off.contains(a) => Presence::Off,
+            Some(a) if u.present.contains(a) => Presence::One(a.clone()),
+            _ => Presence::Absent,
+        }
+    })
+}
+
+/// The user switched the active unit off.
+pub fn switched_off() -> bool {
+    with(|u| u.active.as_ref().is_some_and(|a| u.off.contains(a)))
+}
+
+/// The user switched `unit` off.
+pub fn unit_off(unit: &str) -> bool {
+    with(|u| u.off.contains(unit))
+}
+
+/// Switch `unit` off (the caller tells its worker to let go of the ports)
+/// or back on (scan right away, so the answer is fresh this frame).
+pub(super) fn set_off(unit: &str, off: bool) {
+    with(|u| {
+        if off {
+            u.off.insert(unit.to_owned());
+        } else {
+            u.off.remove(unit);
+        }
+        u.connection.remove(unit);
+    });
+    crate::log::line(format!("device: {unit} switched {}", if off { "off" } else { "on" }));
+    if !off {
+        rescan();
     }
 }
 
@@ -181,20 +214,7 @@ pub fn start(ctx: egui::Context) {
         .name("device presence".into())
         .spawn(move || {
             loop {
-                if switched_off() {
-                    std::thread::sleep(SCAN_EVERY);
-                    continue;
-                }
-                let now = scan();
-                let changed = match STATE.lock() {
-                    Ok(mut s) if *s != now => {
-                        crate::log::line(format!("device: presence {now:?}"));
-                        *s = now;
-                        true
-                    }
-                    _ => false,
-                };
-                if changed {
+                if rescan() {
                     ctx.request_repaint();
                 }
                 std::thread::sleep(SCAN_EVERY);
@@ -202,41 +222,52 @@ pub fn start(ctx: egui::Context) {
         });
 }
 
-fn scan() -> Presence {
-    // A fresh client each time: a long-lived one may not see ports come and
-    // go without a run loop.
-    let Ok(input) = midir::MidiInput::new("KitPool presence") else {
-        return Presence::Unknown;
-    };
-    let all_in: Vec<String> = input
-        .ports()
-        .iter()
-        .filter_map(|p| input.port_name(p).ok())
-        .collect();
+/// Scan now unless a scan has finished, so a request sent at startup goes
+/// to the unit plugged in rather than to "none found".
+pub(super) fn ensure_scanned() {
+    if !with(|u| u.scanned) {
+        rescan();
+    }
+}
+
+/// Scan and store the answer; whether it changed. Only port names are
+/// looked at, so switched-off units are left alone.
+fn rescan() -> bool {
+    let (all_in, all_out) = scan();
+    let mut names: Vec<String> = all_in.iter().filter(|n| super::conn::elektron_port(n)).cloned().collect();
+    names.sort();
+    names.dedup();
+    with(|u| {
+        let changed = !u.scanned || u.present != names;
+        u.scanned = true;
+        u.ports = (all_in, all_out);
+        u.present = names;
+        // Nothing picked yet, or the active unit was unplugged while
+        // another is still there: use the first one present.
+        let gone = u.active.as_ref().is_none_or(|a| !u.present.contains(a));
+        if gone {
+            if let Some(first) = u.present.first() {
+                if u.active.as_ref() != Some(first) {
+                    crate::log::line(format!("device: active unit {first}"));
+                    u.active = Some(first.clone());
+                }
+            }
+        }
+        if changed {
+            crate::log::line(format!("device: units {:?}, active {:?}", u.present, u.active));
+        }
+        changed
+    })
+}
+
+/// Every MIDI input and output name. A fresh client each time: a
+/// long-lived one may not see ports come and go without a run loop.
+fn scan() -> (Vec<String>, Vec<String>) {
+    let all_in: Vec<String> = midir::MidiInput::new("KitPool presence")
+        .map(|i| i.ports().iter().filter_map(|p| i.port_name(p).ok()).collect())
+        .unwrap_or_default();
     let all_out: Vec<String> = midir::MidiOutput::new("KitPool presence")
         .map(|o| o.ports().iter().filter_map(|p| o.port_name(p).ok()).collect())
         .unwrap_or_default();
-    let mut names: Vec<String> = all_in
-        .iter()
-        .filter(|n| super::conn::elektron_port(n))
-        .cloned()
-        .collect();
-    if let Ok(mut p) = PORTS.lock() {
-        *p = (all_in, all_out);
-    }
-    names.sort();
-    names.dedup();
-    if let Ok(mut pick) = PICK.lock() {
-        match pick.as_ref() {
-            Some(p) if names.contains(p) => return Presence::One(p.clone()),
-            // Unplugged: forget it, so the units left are handled as usual.
-            Some(_) => *pick = None,
-            None => {}
-        }
-    }
-    match names.len() {
-        0 => Presence::Absent,
-        1 => Presence::One(names.remove(0)),
-        _ => Presence::Many(names),
-    }
+    (all_in, all_out)
 }

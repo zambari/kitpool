@@ -197,9 +197,18 @@ notices when the device is plugged in or out and reconnects on its own.
 
 #### Samples: reorder and clean up the pool
 
-- Drag a slot onto any other (in any bank) to swap them, or select several
-  and move them with **⌥↑ / ⌥↓**. Hold **⌃** or **⌥** while dropping to
-  insert and shift the following slots instead of swapping.
+- Drag a slot onto any other (in any bank) to insert it there: the samples
+  below move down only as far as the next empty slot. Hold **⌃** or **⌥**
+  while dropping to swap with what's there instead. Select several and move
+  them with **⌥↑ / ⌥↓**.
+- **Groups**: select adjacent slots in one bank, right-click › **Group N
+  slots…** and name it. A dashed frame with the name marks it; drag the name
+  or the frame's side to move the whole group. Drop slots onto its rows to
+  add them (what follows is pushed down to the next empty slot); drag one
+  out to remove it (the group closes up and pulls what follows up).
+  Right-click › **Dissolve group** forgets it, leaving the samples in
+  place. Groups are this app's own, kept per unit, and come back whenever
+  a project has the same samples.
 - Two panes show two banks side by side; drag onto a bank tab or into the
   other pane to move samples between banks. **⇥ Dock beside files** puts
   the pool in the right column instead, next to the editor and files.
