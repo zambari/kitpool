@@ -59,6 +59,8 @@ pub struct ElekState {
     want_local: Option<((u32, u32), bool)>,
     /// A row asked to show its original in the source pane.
     want_original: Option<(u32, u32)>,
+    /// The slot menu asked to queue these pool samples for the preview cache.
+    want_fetch: Option<Vec<(u32, u32)>>,
     /// Renaming a pool sample's +Drive file: `(key, +Drive path, name typed
     /// so far, focus the field next frame)`.
     renaming: Option<((u32, u32), String, String, bool)>,
@@ -108,6 +110,8 @@ pub struct ElekState {
     /// Scroll offset of each pane last frame, and a slot to bring into view.
     scroll: [f32; 2],
     view_h: [f32; 2],
+    /// Scroll offset a pane eases to next frame (group alignment).
+    align: [Option<f32>; 2],
     reveal: Option<usize>,
     /// A slot (position now) flashed to point it out without selecting it.
     ping: Option<(usize, std::time::Instant)>,
@@ -236,6 +240,9 @@ pub enum ElekIntent {
     Undock,
     /// Fetch every pool file without a local copy, in the background.
     FetchAll,
+    /// Queue these pool files for the preview cache (ones with a local copy
+    /// are skipped).
+    FetchKeys(Vec<(u32, u32)>),
     StopFetch,
     /// Move the preview cache to the Trash.
     PurgeCache,
@@ -295,6 +302,14 @@ enum RowAct {
     RenameGroup(usize),
     DissolveGroup(usize),
     SelectGroup(usize),
+    /// Line the other pane up on its group of the same name.
+    AlignGroup(usize),
+    /// Make an empty group like this one in every bank without one.
+    SpreadGroup(usize),
+    /// Move these slots into group `g` at its end ("Move to group").
+    JoinGroup(usize, Vec<usize>),
+    /// Forget every group that holds no samples.
+    RemoveEmptyGroups,
     /// `(slot, how many)`.
     InsertEmpty(usize, usize),
     CloseGap(usize),
@@ -307,6 +322,8 @@ enum RowAct {
     ShowOriginal((u32, u32)),
     UpdateChanged(Vec<(u32, u32)>),
     Rename((u32, u32)),
+    /// Queue these pool samples for the preview cache.
+    Fetch(Vec<(u32, u32)>),
     /// Local files dropped on this slot.
     DropFiles(usize, Vec<std::path::PathBuf>),
     /// Cut (`true`) or copy these slots.

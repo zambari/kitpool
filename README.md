@@ -204,11 +204,20 @@ notices when the device is plugged in or out and reconnects on its own.
 - **Groups**: select adjacent slots in one bank, right-click › **Group N
   slots…** and name it. A dashed frame with the name marks it; drag the name
   or the frame's side to move the whole group. Drop slots onto its rows to
-  add them (what follows is pushed down to the next empty slot); drag one
+  add them (what follows is pushed down to the next empty slot, or, when
+  there's no room below in the bank, what's above is pushed up); drag one
   out to remove it (the group closes up and pulls what follows up).
   Right-click › **Dissolve group** forgets it, leaving the samples in
   place. Groups are this app's own, kept per unit, and come back whenever
-  a project has the same samples.
+  a project has the same samples. Groups may hold empty slots: dropping
+  samples into such a container fills its empty slots instead of growing
+  it (below the drop line first, else above), and a container keeps its size when samples are dragged out (if
+  there's an empty slot next to it to take back). Right-click a group ›
+  **Add empty "fx" to other banks** makes a one-slot empty container of
+  that name in every bank that has none, on the slot number in the middle
+  of the source group where it's empty, else on the nearest empty slot. Click a group's frame side to line the
+  other pane up on its group of the same name (say `fx` in bank A and in
+  bank F), so the two can be compared row by row.
 - Two panes show two banks side by side; drag onto a bank tab or into the
   other pane to move samples between banks. **⇥ Dock beside files** puts
   the pool in the right column instead, next to the editor and files.

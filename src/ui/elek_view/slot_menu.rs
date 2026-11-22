@@ -80,8 +80,25 @@ pub(super) fn slot_menu(ui: &mut egui::Ui, st: &ElekState, row: &SlotRowInfo<'_>
             .on_hover_text("Then paste into a local file pane to download them there, as when dragging slots out")
             .clicked()
         {
-            acts.push(RowAct::Clip(pick, false));
+            acts.push(RowAct::Clip(pick.clone(), false));
             ui.close();
+        }
+        // Samples without a local copy, from the selection (or this row).
+        let unfetched: Vec<(u32, u32)> = pick
+            .iter()
+            .filter_map(|&s| st.key_at(s))
+            .filter(|k| !st.linked.contains_key(k) && st.names.contains_key(k))
+            .collect();
+        if !unfetched.is_empty() {
+            let what = if unfetched.len() == 1 { "sample".to_owned() } else { format!("{} samples", unfetched.len()) };
+            if ui
+                .button(format!("⬇ Fetch {what} for preview"))
+                .on_hover_text("Copy into the preview cache in the background, after the fetches already queued, so they play instantly later. Nothing changes on the device")
+                .clicked()
+            {
+                acts.push(RowAct::Fetch(unfetched));
+                ui.close();
+            }
         }
     }
     let cut_n = st.clip.as_ref().filter(|c| c.cut).map_or(0, |_| st.clip_positions().len());
@@ -185,6 +202,7 @@ pub(super) fn slot_menu(ui: &mut egui::Ui, st: &ElekState, row: &SlotRowInfo<'_>
             acts.push(RowAct::RenameGroup(g));
             ui.close();
         }
+        super::slots::spread_button(ui, st, g, acts);
         if ui.button("Dissolve group").on_hover_text("Forget the group; its samples stay where they are").clicked() {
             acts.push(RowAct::DissolveGroup(g));
             ui.close();
@@ -206,6 +224,41 @@ pub(super) fn slot_menu(ui: &mut egui::Ui, st: &ElekState, row: &SlotRowInfo<'_>
             Err(why) => {
                 ui.add_enabled(false, egui::Button::new(label)).on_disabled_hover_text(why);
             }
+        }
+    }
+    // Move the selection (or this row) into one of the groups. Each entry
+    // says what would happen; a move that would split or overflow a group
+    // is shown disabled, with the reason.
+    if !st.groups.is_empty() {
+        let join_pick: Vec<usize> = if selected { st.sel.iter().copied().collect() } else { vec![slot] };
+        ui.separator();
+        ui.menu_button("Move to group", |ui| {
+            for g in 0..st.groups.len() {
+                let name = st.groups[g].name.as_str();
+                match st.plan_join(g, &join_pick) {
+                    Ok(plan) => {
+                        if ui.button(name).on_hover_text(plan.note).clicked() {
+                            acts.push(RowAct::JoinGroup(g, join_pick.clone()));
+                            ui.close();
+                        }
+                    }
+                    Err(why) => {
+                        ui.add_enabled(false, egui::Button::new(name)).on_disabled_hover_text(why);
+                    }
+                }
+            }
+        });
+    }
+    let empty = st.empty_groups();
+    if empty > 0 {
+        let label = if empty == 1 { "Remove empty group".to_owned() } else { format!("Remove {empty} empty groups") };
+        if ui
+            .button(label)
+            .on_hover_text("Forget the groups that hold no samples. Slots don't move")
+            .clicked()
+        {
+            acts.push(RowAct::RemoveEmptyGroups);
+            ui.close();
         }
     }
     ui.separator();

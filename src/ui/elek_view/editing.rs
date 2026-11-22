@@ -313,7 +313,7 @@ impl ElekState {
                 self.fills.insert(o, PoolEntry::EMPTY);
             }
         }
-        self.close_freed_members();
+        self.sync_saved_groups();
     }
 
     /// Every non-empty slot nothing points at.

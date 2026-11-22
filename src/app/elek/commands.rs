@@ -21,6 +21,7 @@ impl App {
                     self.enter_full_elek();
                 }
                 ElekIntent::FetchAll => self.fetch_all(),
+                ElekIntent::FetchKeys(keys) => self.fetch_keys(keys),
                 ElekIntent::StopFetch => self.stop_fetch(),
                 ElekIntent::PurgeCache => self.purge_cache(),
                 ElekIntent::AddFiles(pairs) => self.add_pool_files(pairs),

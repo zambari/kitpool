@@ -3,10 +3,14 @@
 //! they're saved per unit by +Drive hash (`state::PoolGroup`), so a project
 //! with the same samples gets its groups back.
 //!
-//! Rules: a group holds samples only, always packed and inside one bank.
-//! Dropping slots into a group adds them and pushes what follows down as far
-//! as the next empty slot; dragging one out closes the group up and pulls up
-//! what follows, as far as the next empty slot. Every slot move is worked
+//! Rules: a group is a packed run of slots inside one bank. It may hold
+//! empty slots (a *container*: places waiting for samples). Dropping slots
+//! into a group fills its empty slots below the drop line first, else adds
+//! them and pushes what follows down as far as the next free slot; dragging
+//! one out closes the group up and pulls up what follows, as far as the
+//! next free slot, and a container then takes free slots next to it back
+//! up to its old size. An empty slot in a group is never "free" for a push
+//! from outside it: it moves with its group. Every slot move is worked
 //! out first (`ElekState::plan`), so the pointer note says what will happen
 //! and a move that would break a group is refused before it happens.
 
@@ -70,8 +74,8 @@ impl ElekState {
         self.groups.iter().position(|g| g.members.contains(&id))
     }
 
-    /// Slots `pick` can become a group: adjacent, in one bank, all samples,
-    /// none grouped yet. `Err` says why not.
+    /// Slots `pick` can become a group: adjacent, in one bank, none grouped
+    /// yet. Empty slots are fine (a container). `Err` says why not.
     pub(super) fn groupable(&self, pick: &[usize]) -> Result<(), &'static str> {
         let (Some(&a), Some(&b)) = (pick.iter().min(), pick.iter().max()) else { return Err("Nothing selected") };
         if a == 0 {
@@ -83,19 +87,35 @@ impl ElekState {
         if a / BANK != b / BANK {
             return Err("A group stays inside one bank");
         }
-        if pick.iter().any(|&s| self.free(self.order[s])) {
-            return Err("Groups hold samples only: close the empty slots first");
-        }
         if pick.iter().any(|&s| self.group_at(s).is_some()) {
             return Err("Some of these slots are already in a group");
         }
         Ok(())
     }
 
+    /// Why a group can't be called `name` in `bank`: another group of that
+    /// name already sits in the bank. (Same names in other banks are fine.)
+    fn name_taken(&self, name: &str, bank: usize, except: Option<usize>) -> Option<String> {
+        let want = name.trim().to_lowercase();
+        let spans = self.group_spans();
+        let taken = self
+            .groups
+            .iter()
+            .enumerate()
+            .any(|(i, g)| Some(i) != except && spans[i].start / BANK == bank && g.name.trim().to_lowercase() == want);
+        taken.then(|| format!("A group named \"{}\" already exists in bank {}", name.trim(), (b'A' + bank as u8) as char))
+    }
+
     pub(super) fn new_group(&mut self, pick: &[usize], name: String) {
         if let Err(why) = self.groupable(pick) {
             self.status = why.into();
             return;
+        }
+        if let Some(&first) = pick.iter().min() {
+            if let Some(why) = self.name_taken(&name, first / BANK, None) {
+                self.status = why;
+                return;
+            }
         }
         let mut pick = pick.to_vec();
         pick.sort_unstable();
@@ -106,11 +126,34 @@ impl ElekState {
     }
 
     pub(super) fn rename_group(&mut self, g: usize, name: String) {
+        if let Some(span) = self.group_spans().get(g).cloned() {
+            if let Some(why) = self.name_taken(&name, span.start / BANK, Some(g)) {
+                self.status = why;
+                return;
+            }
+        }
         let mut groups = self.groups.clone();
         let Some(gr) = groups.get_mut(g) else { return };
         gr.name = name.clone();
         self.commit(self.order.clone(), groups);
         self.status = format!("Renamed the group \"{name}\"");
+    }
+
+    /// Groups holding no samples at all (only empty slots, or none).
+    pub(super) fn empty_groups(&self) -> usize {
+        self.groups.iter().filter(|g| g.members.iter().all(|&x| self.free(x))).count()
+    }
+
+    /// Forgets every group with no samples in it. Slots don't move.
+    pub(super) fn remove_empty_groups(&mut self) {
+        let groups: Vec<Group> = self.groups.iter().filter(|g| !g.members.iter().all(|&x| self.free(x))).cloned().collect();
+        let removed = self.groups.len() - groups.len();
+        if removed == 0 {
+            self.status = "No empty groups to remove".into();
+            return;
+        }
+        self.commit(self.order.clone(), groups);
+        self.status = format!("Removed {removed} empty group(s)");
     }
 
     /// Forgets group `g`; its samples stay where they are.
@@ -130,13 +173,164 @@ impl ElekState {
         self.cursor = Some(span.start);
     }
 
+    /// For every bank without a group named like `g`: where a one-slot
+    /// empty container would go, `(bank, slot)`, or `None` when the bank has
+    /// no empty, ungrouped slot. Prefers the slot number in the middle of
+    /// `g`, then the nearest one.
+    pub(super) fn spread_targets(&self, g: usize) -> Vec<(usize, Option<usize>)> {
+        let spans = self.group_spans();
+        let (Some(gr), Some(span)) = (self.groups.get(g), spans.get(g)) else { return Vec::new() };
+        let name = gr.name.trim().to_lowercase();
+        let n = self.order.len();
+        let off = mid_of(span);
+        let open = |p: usize| p >= 1 && self.free(self.order[p]) && self.group_at(p).is_none();
+        (0..n.div_ceil(BANK))
+            .filter(|&b| b != span.start / BANK)
+            .filter(|&b| {
+                !self.groups.iter().zip(&spans).any(|(h, r)| r.start / BANK == b && h.name.trim().to_lowercase() == name)
+            })
+            .map(|b| {
+                let first = b * BANK;
+                let last = (first + BANK).min(n);
+                let at = (first..last).filter(|&a| open(a)).min_by_key(|&a| (a - first).abs_diff(off));
+                (b, at)
+            })
+            .collect()
+    }
+
+    /// Makes a one-slot empty group named like `g` in every bank that has
+    /// none, as one undo step.
+    pub(super) fn spread_group(&mut self, g: usize) {
+        let Some(gr) = self.groups.get(g) else { return };
+        let name = gr.name.clone();
+        let off = mid_of(&self.group_spans()[g]);
+        let targets = self.spread_targets(g);
+        let letter = |b: usize| (b'A' + b as u8) as char;
+        if targets.is_empty() {
+            self.status = format!("Every bank already has a \"{name}\" group");
+            return;
+        }
+        let mut groups = self.groups.clone();
+        let (mut same, mut moved, mut none) = (Vec::new(), Vec::new(), Vec::new());
+        for &(b, at) in &targets {
+            match at {
+                Some(a) => {
+                    groups.push(Group { name: name.clone(), members: vec![self.order[a]] });
+                    if a % BANK == off { same.push(letter(b).to_string()) } else { moved.push(self.label(a)) }
+                }
+                None => none.push(letter(b).to_string()),
+            }
+        }
+        let mut parts = Vec::new();
+        if !same.is_empty() {
+            parts.push(format!("in {} at {:03}", same.join(", "), off));
+        }
+        if !moved.is_empty() {
+            parts.push(format!("at {}", moved.join(", ")));
+        }
+        let mut note = if parts.is_empty() {
+            format!("No room for an empty \"{name}\"")
+        } else {
+            self.commit(self.order.clone(), groups);
+            format!("Made empty \"{name}\" groups {}", parts.join("; "))
+        };
+        if !none.is_empty() {
+            note += &format!(" · no empty slot in {}", none.join(", "));
+        }
+        self.status = note;
+    }
+
+    /// Group `g` was clicked by its frame in pane `side`: scroll the other
+    /// pane so its group of the same name (in the bank it shows) sits level
+    /// with this one. When the other pane can't scroll that far, this pane
+    /// moves to meet it.
+    pub(super) fn align_group(&mut self, g: usize, side: usize) {
+        let spans = self.group_spans();
+        let (Some(gr), Some(span)) = (self.groups.get(g), spans.get(g).cloned()) else { return };
+        let name = gr.name.trim().to_lowercase();
+        let other = 1 - side;
+        let n = self.order.len();
+        let bank_o = self.bank[other];
+        let same: Vec<usize> = (0..self.groups.len())
+            .filter(|&h| h != g && self.groups[h].name.trim().to_lowercase() == name)
+            .collect();
+        let letter = |b: usize| (b'A' + b as u8) as char;
+        let Some(h) = same.iter().copied().find(|&h| spans[h].start / BANK == bank_o) else {
+            let mut elsewhere: Vec<char> = same.iter().map(|&h| letter(spans[h].start / BANK)).collect();
+            elsewhere.dedup();
+            self.status = if elsewhere.is_empty() {
+                format!("No other group named \"{}\" to line up with", gr.name)
+            } else {
+                let list: Vec<String> = elsewhere.iter().map(char::to_string).collect();
+                format!("No \"{}\" group in bank {}; there's one in {}", gr.name, letter(bank_o), list.join(", "))
+            };
+            return;
+        };
+        let max = |b: usize, s: usize| ((BANK.min(n - b * BANK)) as f32 * ROW_H - self.view_h[s]).max(0.0);
+        let top = |r: &Range<usize>| (r.start % BANK) as f32 * ROW_H;
+        let (top_a, top_b) = (top(&span), top(&spans[h]));
+        // Where the clicked group sits in its pane now; the other one goes there.
+        let y = top_a - self.scroll[side];
+        let o = (top_b - y).clamp(0.0, max(bank_o, other));
+        let a = (top_a - top_b + o).clamp(0.0, max(span.start / BANK, side));
+        if (o - self.scroll[other]).abs() > 0.5 {
+            self.align[other] = Some(o);
+        }
+        if (a - self.scroll[side]).abs() > 0.5 {
+            self.align[side] = Some(a);
+        }
+        self.status = format!(
+            "Lined up \"{}\": {} ↔ {}",
+            gr.name,
+            self.label(span.start),
+            self.label(spans[h].start)
+        );
+    }
+
     /// Works out a drop without doing it: `Err` says why it can't happen.
     pub(super) fn plan(&self, d: SlotDrop) -> Result<Plan, String> {
+        self.plan_picked(d, None)
+    }
+
+    /// Moves `pick` into group `g` at its end, as a drop there would (the
+    /// slot menu's "Move to group"). Members already in `g` stay put.
+    pub(super) fn plan_join(&self, g: usize, pick: &[usize]) -> Result<Plan, String> {
+        let Some(gr) = self.groups.get(g) else { return Err("No such group".into()) };
+        let n = self.order.len();
+        let mut picked: Vec<usize> =
+            pick.iter().copied().filter(|&s| s > 0 && s < n && !gr.members.contains(&self.order[s])).collect();
+        picked.sort_unstable();
+        picked.dedup();
+        if picked.is_empty() {
+            return Err(format!("Already all in \"{}\"", gr.name));
+        }
+        self.plan_picked(SlotDrop::Into { g, before: None, line: 0 }, Some(&picked))
+    }
+
+    /// Joins `pick` to group `g` (see `plan_join`) as one undo step.
+    pub(super) fn join_group(&mut self, g: usize, pick: &[usize]) {
+        match self.plan_join(g, pick) {
+            Ok(p) => {
+                self.commit(p.order, p.groups);
+                self.status = p.note;
+            }
+            Err(why) => self.status = why,
+        }
+    }
+
+    /// `pick`: the slots to move instead of the selection.
+    fn plan_picked(&self, d: SlotDrop, pick: Option<&[usize]>) -> Result<Plan, String> {
         let n = self.order.len();
         let spans = self.group_spans();
         let (picked, whole): (Vec<usize>, Option<usize>) = match d {
             SlotDrop::Group { g, .. } => (spans.get(g).ok_or("No such group")?.clone().collect(), Some(g)),
-            _ => (self.sel.iter().copied().filter(|&s| s > 0 && s < n).collect(), None),
+            _ => {
+                let from: Vec<usize> = match pick {
+                    Some(p) => p.to_vec(),
+                    None => self.sel.iter().copied().collect(),
+                };
+                (from.into_iter().filter(|&s| s > 0 && s < n).collect(), None)
+            }
         };
         if picked.is_empty() {
             return Err("Nothing to move".into());
@@ -161,14 +355,28 @@ impl ElekState {
             }
             cells[p] = None;
         }
+        // Containers keep their size after losing members, if there's room.
+        let sizes: Vec<Option<usize>> = groups
+            .iter()
+            .map(|g| g.members.iter().any(|&x| self.free(x)).then_some(g.members.len()))
+            .collect();
         if whole.is_none() {
             for g in &mut groups {
                 g.members.retain(|x| !moved.contains(x));
             }
         }
+        let grouped: HashSet<u16> = groups.iter().flat_map(|g| g.members.iter().copied()).collect();
+        // Free for a push: empty and in no group; dropping into a group may
+        // also fill that group's own empty slots.
+        let into = match d {
+            SlotDrop::Into { g, .. } => Some(g),
+            _ => None,
+        };
+        let loose = |id: u16| self.free(id) && !grouped.contains(&id);
+        let absorbs = |id: u16| loose(id) || (self.free(id) && into.is_some_and(|g| groups[g].members.contains(&id)));
         for &p in closes.iter().rev() {
             let end = bank_end(p, n);
-            let e = (p + 1..end).find(|&i| cells[i].is_none_or(|id| self.free(id))).unwrap_or(end);
+            let e = (p + 1..end).find(|&i| cells[i].is_none_or(loose)).unwrap_or(end);
             cells[p..e].rotate_left(1);
         }
         // Where the moved slots go, in the lifted-out layout.
@@ -187,38 +395,83 @@ impl ElekState {
             SlotDrop::Place(_) => unreachable!(),
         };
         // Put them in, pushing what's there down until enough empty slots
-        // (including the ones just left) take up the shift.
-        let mut spare = Vec::new();
-        let mut carry = std::collections::VecDeque::new();
-        let mut incoming = moved.iter().copied();
-        let mut i = at;
-        loop {
-            let Some(next) = incoming.next().or_else(|| carry.pop_front()) else { break };
-            if i >= n {
-                return Err("No empty slot below to make room".into());
+        // (including the ones just left) take up the shift. When there's no
+        // room below (bank or pool end, or a group would be split), push
+        // what's above the landing spot up instead.
+        let place = |up: bool| -> Result<(Vec<u16>, Vec<Group>, usize), String> {
+            let mut cells = cells.clone();
+            let mut groups = groups.clone();
+            let mut spare = Vec::new();
+            let mut carry = std::collections::VecDeque::new();
+            if up {
+                // The block ends right before `at` (Into) or covers at..at+m.
+                let end = if into.is_some() { at } else { at + m };
+                let mut incoming = moved.iter().rev().copied();
+                let mut i = end;
+                loop {
+                    let Some(next) = incoming.next().or_else(|| carry.pop_front()) else { break };
+                    if i <= 1 {
+                        return Err("No empty slot above to make room".into());
+                    }
+                    i -= 1;
+                    match cells[i].replace(next) {
+                        Some(old) if absorbs(old) => spare.push(old),
+                        Some(old) => carry.push_back(old),
+                        None => {}
+                    }
+                }
+            } else {
+                let mut incoming = moved.iter().copied();
+                let mut i = at;
+                loop {
+                    let Some(next) = incoming.next().or_else(|| carry.pop_front()) else { break };
+                    if i >= n {
+                        return Err("No empty slot below to make room".into());
+                    }
+                    match cells[i].replace(next) {
+                        Some(old) if absorbs(old) => spare.push(old),
+                        Some(old) => carry.push_back(old),
+                        None => {}
+                    }
+                    i += 1;
+                }
             }
-            match cells[i].replace(next) {
-                Some(old) if self.free(old) => spare.push(old),
-                Some(old) => carry.push_back(old),
-                None => {}
+            let spare_ids: HashSet<u16> = spare.iter().copied().collect();
+            let mut spare = spare.into_iter();
+            for c in cells.iter_mut().filter(|c| c.is_none()) {
+                *c = spare.next();
             }
-            i += 1;
-        }
-        let mut spare = spare.into_iter();
-        for c in cells.iter_mut().filter(|c| c.is_none()) {
-            *c = spare.next();
-        }
-        let order: Vec<u16> = cells.into_iter().map(|c| c.expect("every lifted slot refilled")).collect();
-        if let SlotDrop::Into { g, .. } = d {
-            groups[g].members.extend(&moved);
-        }
+            let order: Vec<u16> = cells.into_iter().map(|c| c.expect("every lifted slot refilled")).collect();
+            let mut filled = 0;
+            if let Some(g) = into {
+                let before = groups[g].members.len();
+                groups[g].members.retain(|x| !spare_ids.contains(x));
+                filled = before - groups[g].members.len();
+                groups[g].members.extend(&moved);
+            }
+            let pos = positions(&order);
+            for g in &mut groups {
+                g.members.sort_by_key(|x| pos[*x as usize]);
+            }
+            regrow(&mut groups, &sizes, &order, &pos, |id| self.free(id));
+            self.check_groups(&order, &groups.iter().filter(|g| !g.members.is_empty()).cloned().collect::<Vec<_>>())?;
+            Ok((order, groups, filled))
+        };
+        let (upward, (order, mut groups, filled)) = match place(false) {
+            // Into a container: filling its empty slots above beats growing.
+            Ok(r) if into.is_some() && r.2 < m => match place(true) {
+                Ok(u) if u.2 > r.2 => (true, u),
+                _ => (false, r),
+            },
+            Ok(r) => (false, r),
+            Err(below) => match place(true) {
+                Ok(r) => (true, r),
+                Err(_) => return Err(below),
+            },
+        };
         let pos = positions(&order);
-        for g in &mut groups {
-            g.members.sort_by_key(|x| pos[*x as usize]);
-        }
         let emptied: Vec<String> = groups.iter().filter(|g| g.members.is_empty()).map(|g| g.name.clone()).collect();
         groups.retain(|g| !g.members.is_empty());
-        self.check_groups(&order, &groups)?;
 
         // What it says.
         let range = |a: usize| {
@@ -232,7 +485,8 @@ impl ElekState {
             .filter(|(a, b)| a != b)
             .collect();
         let down: Vec<usize> = shifted.iter().filter(|(a, b)| b > a).map(|&(_, b)| b).collect();
-        let up = shifted.iter().filter(|(a, b)| b < a).count();
+        let ups: Vec<usize> = shifted.iter().filter(|(a, b)| b < a).map(|&(_, b)| b).collect();
+        let up = ups.len();
         let land = pos[moved[0] as usize];
         let mut note = match d {
             SlotDrop::Group { g, .. } => format!("Move group \"{}\" to {}", self.groups[g].name, range(land)),
@@ -240,6 +494,8 @@ impl ElekState {
                 let name = &self.groups[g].name;
                 if moved.iter().all(|x| self.groups[g].members.contains(x)) {
                     format!("Reorder in \"{name}\" at {}", range(land))
+                } else if filled > 0 {
+                    format!("Fill {filled} empty slot(s) of \"{name}\" at {}", range(land))
                 } else {
                     format!("Add to \"{name}\" at {}", range(land))
                 }
@@ -254,7 +510,11 @@ impl ElekState {
         if let Some(&last) = down.iter().max() {
             note += &format!(" · {} pushed down to {}", down.len(), self.label(last));
         }
-        if up > 0 {
+        if upward {
+            if let Some(&top) = ups.iter().min() {
+                note += &format!(" · no room below: {up} pushed up to {}", self.label(top));
+            }
+        } else if up > 0 {
             note += &format!(" · {up} pulled up");
         }
         if whole.is_none() && !matches!(d, SlotDrop::Into { .. }) {
@@ -303,9 +563,6 @@ impl ElekState {
             if span.start == 0 || span.start / BANK != (span.end - 1) / BANK {
                 return Err(format!("That would push the group \"{}\" past the end of its bank", g.name));
             }
-            if g.members.iter().any(|&x| self.free(x)) {
-                return Err(format!("That would leave an empty slot in the group \"{}\"", g.name));
-            }
         }
         Ok(())
     }
@@ -330,7 +587,7 @@ impl ElekState {
         self.groups
             .iter()
             .filter_map(|g| {
-                let mut ps: Vec<usize> = g.members.iter().filter(|&&x| !self.free(x)).map(|&x| pos[x as usize]).collect();
+                let mut ps: Vec<usize> = g.members.iter().map(|&x| pos[x as usize]).collect();
                 ps.sort_unstable();
                 let mut best: Range<usize> = 0..0;
                 let mut i = 0;
@@ -348,39 +605,6 @@ impl ElekState {
                 (!members.is_empty()).then(|| Group { name: g.name.clone(), members })
             })
             .collect()
-    }
-
-    /// Members just emptied (cleared) leave their group, which closes up,
-    /// pulling up what follows as far as the next empty slot. Part of the
-    /// clear's undo step.
-    pub(super) fn close_freed_members(&mut self) {
-        let pos = positions(&self.order);
-        let mut freed: Vec<usize> = self
-            .groups
-            .iter()
-            .flat_map(|g| g.members.iter().copied())
-            .filter(|&x| self.free(x))
-            .map(|x| pos[x as usize])
-            .collect();
-        if freed.is_empty() {
-            return;
-        }
-        freed.sort_unstable();
-        let n = self.order.len();
-        let mut order = self.order.clone();
-        for &p in freed.iter().rev() {
-            let end = bank_end(p, n);
-            let e = (p + 1..end).find(|&i| self.free(order[i])).unwrap_or(end);
-            order[p..e].rotate_left(1);
-        }
-        let mut groups = self.groups.clone();
-        for g in &mut groups {
-            g.members.retain(|&x| !self.free(x));
-        }
-        groups.retain(|g| !g.members.is_empty());
-        self.order = order;
-        self.groups = groups;
-        self.sync_saved_groups();
     }
 
     /// The saved groups for this unit, from the app (on start and when
@@ -408,23 +632,27 @@ impl ElekState {
         }
         let mut taken: HashSet<usize> = HashSet::new();
         for (i, sg) in self.saved_groups.iter().enumerate() {
-            let mut ps: Vec<usize> = Vec::new();
-            for k in &sg.keys {
-                match by_key.get(k).and_then(|v| v.iter().copied().find(|p| !taken.contains(p) && !ps.contains(p))) {
-                    Some(p) => ps.push(p),
-                    None => break,
-                }
-            }
-            if ps.len() != sg.keys.len() || ps.is_empty() {
-                continue;
-            }
-            let (a, b) = (*ps.iter().min().unwrap_or(&0), *ps.iter().max().unwrap_or(&0));
-            if b - a + 1 != ps.len() || a / BANK != b / BANK {
-                continue;
-            }
-            ps.sort_unstable();
-            taken.extend(&ps);
-            self.groups.push(Group { name: sg.name.clone(), members: ps.iter().map(|&p| self.order[p]).collect() });
+            let len = sg.keys.len();
+            // Where the group could start: lined up on its first sample, or
+            // where it was saved when it holds only empty slots.
+            let starts: Vec<usize> = match sg.keys.iter().position(|&k| k != EMPTY_KEY) {
+                Some(j) => by_key.get(&sg.keys[j]).map_or(Vec::new(), |v| v.iter().filter_map(|&p| p.checked_sub(j)).collect()),
+                None => sg.at.map(|a| a as usize).into_iter().collect(),
+            };
+            let fits = |a: usize| {
+                a >= 1
+                    && len > 0
+                    && a + len <= n
+                    && a / BANK == (a + len - 1) / BANK
+                    && sg.keys.iter().enumerate().all(|(j, &k)| {
+                        let p = a + j;
+                        !taken.contains(&p)
+                            && if k == EMPTY_KEY { self.free(self.order[p]) } else { self.key_at(p) == Some(k) }
+                    })
+            };
+            let Some(a) = starts.into_iter().find(|&a| fits(a)) else { continue };
+            taken.extend(a..a + len);
+            self.groups.push(Group { name: sg.name.clone(), members: self.order[a..a + len].to_vec() });
             self.groups_from.push(i);
         }
     }
@@ -443,14 +671,51 @@ impl ElekState {
             .map(|(_, g)| g.clone())
             .collect();
         let start = kept.len();
-        kept.extend(self.groups.iter().map(|g| PoolGroup {
+        let spans = self.group_spans();
+        kept.extend(self.groups.iter().zip(&spans).map(|(g, span)| PoolGroup {
             name: g.name.clone(),
-            keys: g.members.iter().map(|&x| self.entry(x as usize).key()).collect(),
+            keys: g.members.iter().map(|&x| if self.free(x) { EMPTY_KEY } else { self.entry(x as usize).key() }).collect(),
+            at: Some(span.start as u16),
         }));
         self.groups_from = (start..kept.len()).collect();
         if kept != self.saved_groups {
             self.saved_groups = kept;
             self.groups_dirty = true;
+        }
+    }
+}
+
+/// Slot number (within its bank) in the middle of a group's span.
+fn mid_of(span: &Range<usize>) -> usize {
+    (span.start + (span.len().max(1) - 1) / 2) % BANK
+}
+
+/// Saved key of an empty slot in a group.
+const EMPTY_KEY: (u32, u32) = (0, 0);
+
+/// Containers (`sizes[g]` set: they held an empty slot) that lost members
+/// take free, ungrouped slots right after them, then right before, in their
+/// bank, back up to their old size.
+fn regrow(groups: &mut [Group], sizes: &[Option<usize>], order: &[u16], pos: &[usize], free: impl Fn(u16) -> bool) {
+    let n = order.len();
+    for g in 0..groups.len() {
+        let Some(size) = sizes.get(g).copied().flatten() else { continue };
+        if groups[g].members.is_empty() {
+            continue;
+        }
+        while groups[g].members.len() < size {
+            let span = span_of(&groups[g], pos);
+            let bank = span.start / BANK;
+            let open = |p: usize| {
+                p >= 1 && p < n && p / BANK == bank && free(order[p]) && !groups.iter().any(|h| h.members.contains(&order[p]))
+            };
+            if open(span.end) {
+                groups[g].members.push(order[span.end]);
+            } else if span.start > 0 && open(span.start - 1) {
+                groups[g].members.insert(0, order[span.start - 1]);
+            } else {
+                break;
+            }
         }
     }
 }

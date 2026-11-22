@@ -100,11 +100,14 @@ fn default_focus() -> Role {
 }
 
 /// A sample group (see `ui::elek_view::groups`), by the +Drive hashes of
-/// its samples, top to bottom.
+/// its samples, top to bottom; `(0, 0)` is an empty slot.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 pub struct PoolGroup {
     pub name: String,
     pub keys: Vec<(u32, u32)>,
+    /// First slot when saved: places a group of only empty slots.
+    #[serde(default)]
+    pub at: Option<u16>,
 }
 
 pub fn load(storage: Option<&dyn eframe::Storage>) -> Option<AppState> {

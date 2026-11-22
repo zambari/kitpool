@@ -16,6 +16,9 @@ pub(crate) fn finish(ui: &mut egui::Ui, st: &mut ElekState, out: &mut Vec<ElekIn
     if let Some(k) = st.want_original.take() {
         out.push(ElekIntent::ShowOriginal(k));
     }
+    if let Some(keys) = st.want_fetch.take() {
+        out.push(ElekIntent::FetchKeys(keys));
+    }
     if let Some(keys) = st.want_update.take() {
         out.push(ElekIntent::UpdateChanged(keys));
     }

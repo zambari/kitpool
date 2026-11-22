@@ -108,7 +108,13 @@ impl App {
     /// Queue every pool file without a usable local copy.
     pub(super) fn fetch_all(&mut self) {
         let Some(p) = &self.elek.project else { return };
-        let mut keys: Vec<Key> = p.pool.iter().skip(1).filter(|e| !e.is_empty()).map(|e| e.key()).collect();
+        let keys: Vec<Key> = p.pool.iter().skip(1).filter(|e| !e.is_empty()).map(|e| e.key()).collect();
+        self.fetch_keys(keys);
+    }
+
+    /// Queue pool samples for the preview cache, behind what's already
+    /// queued. Ones with a local copy or already queued are skipped.
+    pub(super) fn fetch_keys(&mut self, mut keys: Vec<Key>) {
         keys.sort();
         keys.dedup();
         let (mut nameless, mut added) = (0, 0);
@@ -136,7 +142,7 @@ impl App {
             f.total += added;
         }
         self.elek.status = match (added, nameless) {
-            (0, 0) => "Every pool sample already has a local copy".into(),
+            (0, 0) => "Nothing new to fetch: already local or already queued".into(),
             (n, 0) => format!("Fetching {n} sample(s) in the background"),
             (n, m) => format!("Fetching {n} sample(s); {m} skipped (no +Drive path)"),
         };

@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// Background behind selected rows that aren't the lone inverted highlight.
+const SEL_GREY: Color32 = Color32::from_rgb(62, 72, 70);
+
 /// Shared facts for a sample-slot row's drop feedback, menu and hover text.
 pub(super) struct SlotRowInfo<'a> {
     pub(super) slot: usize,
@@ -180,6 +183,9 @@ pub(super) fn slot_pane(ui: &mut egui::Ui, st: &mut ElekState, side: usize) {
             ping_target = destination.map(|y| y.clamp(0.0, (rows as f32 * ROW_H - h).max(0.0)));
         }
     }
+    if let Some(y) = st.align[side].take() {
+        ping_target = Some(y);
+    }
     if let Some(y) = crate::ui::file_table::ping_scroll(ui, motion_id, st.scroll[side], ping_target) {
         scroll = scroll.vertical_scroll_offset(y);
     }
@@ -228,7 +234,7 @@ pub(super) fn slot_pane(ui: &mut egui::Ui, st: &mut ElekState, side: usize) {
     for a in acts {
         let edits = !matches!(
             a,
-            RowAct::Click(..) | RowAct::DragStart(..) | RowAct::GroupDragStart(..) | RowAct::NewGroup(_) | RowAct::RenameGroup(_) | RowAct::SelectGroup(_) | RowAct::Local(..) | RowAct::ShowOriginal(_) | RowAct::Rename(_) | RowAct::Clip(..) | RowAct::DropClip
+            RowAct::Click(..) | RowAct::DragStart(..) | RowAct::GroupDragStart(..) | RowAct::NewGroup(_) | RowAct::RenameGroup(_) | RowAct::SelectGroup(_) | RowAct::AlignGroup(_) | RowAct::Local(..) | RowAct::ShowOriginal(_) | RowAct::Rename(_) | RowAct::Fetch(_) | RowAct::Clip(..) | RowAct::DropClip
         );
         if locked && edits {
             st.status = "Wait a moment: the device is busy, and an edit now would be lost".into();
@@ -275,6 +281,13 @@ pub(super) fn slot_pane(ui: &mut egui::Ui, st: &mut ElekState, side: usize) {
                 st.active = side;
                 st.select_group(g);
             }
+            RowAct::AlignGroup(g) => st.align_group(g, side),
+            RowAct::SpreadGroup(g) => st.spread_group(g),
+            RowAct::RemoveEmptyGroups => st.remove_empty_groups(),
+            RowAct::JoinGroup(g, pick) => {
+                st.active = side;
+                st.join_group(g, &pick);
+            }
             RowAct::InsertEmpty(s, n) => st.insert_empty(s, n),
             RowAct::CloseGap(s) => st.close_gap(s),
             RowAct::MoveHere(s) => st.move_sel_to(s),
@@ -286,6 +299,7 @@ pub(super) fn slot_pane(ui: &mut egui::Ui, st: &mut ElekState, side: usize) {
             }
             RowAct::Local(k, open) => st.want_local = Some((k, open)),
             RowAct::ShowOriginal(k) => st.want_original = Some(k),
+            RowAct::Fetch(keys) => st.want_fetch = Some(keys),
             RowAct::UpdateChanged(keys) => st.want_update = Some(keys),
             RowAct::Rename(k) => {
                 if let Some(path) = st.names.get(&k).cloned() {
@@ -403,12 +417,12 @@ fn group_frames(
         let left = ui.interact(
             egui::Rect::from_min_max(rect.min, egui::pos2(rect.left() + edge, rect.bottom())),
             id.with("left"),
-            Sense::drag(),
+            Sense::click_and_drag(),
         );
         let right = ui.interact(
             egui::Rect::from_min_max(egui::pos2(rect.right() - edge, rect.top()), rect.max),
             id.with("right"),
-            Sense::drag(),
+            Sense::click_and_drag(),
         );
         let dragging = st.group_drag == Some(g);
         let hot = dragging || [&tag_r, &left, &right].iter().any(|r| r.hovered());
@@ -433,18 +447,26 @@ fn group_frames(
         if tag_r.clicked() {
             acts.push(RowAct::SelectGroup(g));
         }
+        for r in [&left, &right] {
+            if r.clicked() {
+                acts.push(RowAct::AlignGroup(g));
+            }
+            r.clone().on_hover_text(format!(
+                "Click: line the other pane up on its \"{name}\" group\nDrag: move the group"
+            ));
+        }
         if tag_r.double_clicked() {
             acts.push(RowAct::RenameGroup(g));
         }
         let tag_r = tag_r.on_hover_text(format!(
-            "Group \"{name}\": {} slot(s), moves as one.\nDrag the name or the frame's side to move it · drop slots on its rows to add them · drag one out to remove it\nDouble-click to rename · right-click for more",
+            "Group \"{name}\": {} slot(s), moves as one.\nDrag the name or the frame's side to move it · click the frame's side to line the other pane up on its \"{name}\" · drop slots on its rows to add them · drag one out to remove it\nDouble-click to rename · right-click for more",
             span.len()
         ));
-        tag_r.context_menu(|ui| group_menu(ui, g, acts));
+        tag_r.context_menu(|ui| group_menu(ui, st, g, acts));
     }
 }
 
-fn group_menu(ui: &mut egui::Ui, g: usize, acts: &mut Vec<RowAct>) {
+pub(super) fn group_menu(ui: &mut egui::Ui, st: &ElekState, g: usize, acts: &mut Vec<RowAct>) {
     if ui.button("Select group's slots").clicked() {
         acts.push(RowAct::SelectGroup(g));
         ui.close();
@@ -453,8 +475,39 @@ fn group_menu(ui: &mut egui::Ui, g: usize, acts: &mut Vec<RowAct>) {
         acts.push(RowAct::RenameGroup(g));
         ui.close();
     }
+    spread_button(ui, st, g, acts);
     if ui.button("Dissolve group").on_hover_text("Forget the group; its samples stay where they are").clicked() {
         acts.push(RowAct::DissolveGroup(g));
+        ui.close();
+    }
+}
+
+/// "Add empty "fx" to other banks": an empty container like this group in
+/// every bank that has none, on the same slot numbers when they're free.
+pub(super) fn spread_button(ui: &mut egui::Ui, st: &ElekState, g: usize, acts: &mut Vec<RowAct>) {
+    let Some(name) = st.groups.get(g).map(|gr| gr.name.clone()) else { return };
+    let targets = st.spread_targets(g);
+    let label = format!("Add empty \"{name}\" to other banks");
+    let letters = |f: &dyn Fn(Option<usize>) -> bool| {
+        targets.iter().filter(|(_, at)| f(*at)).map(|(b, _)| ((b'A' + *b as u8) as char).to_string()).collect::<Vec<_>>().join(", ")
+    };
+    let fits = letters(&|at| at.is_some());
+    let full = letters(&|at| at.is_none());
+    if fits.is_empty() {
+        let why = if targets.is_empty() {
+            format!("Every bank already has a \"{name}\" group")
+        } else {
+            format!("No bank without \"{name}\" has an empty slot ({full})")
+        };
+        ui.add_enabled(false, egui::Button::new(label)).on_disabled_hover_text(why);
+        return;
+    }
+    let mut tip = format!("Make a one-slot empty \"{name}\" group in {fits}, on the slot number in the middle of this group where it's empty, else the nearest empty slot.\nDrop samples on it to fill it.");
+    if !full.is_empty() {
+        tip += &format!("\nNo room in {full}");
+    }
+    if ui.button(label).on_hover_text(tip).clicked() {
+        acts.push(RowAct::SpreadGroup(g));
         ui.close();
     }
 }
@@ -480,11 +533,16 @@ fn slot_row(ui: &mut egui::Ui, st: &ElekState, slot: usize, acts: &mut Vec<RowAc
         },
     );
     let selected = st.sel.contains(&slot);
+    // A lone row outside a group keeps the inverted highlight; several rows,
+    // or a row inside a group, get a grey band behind the light text.
+    let inverted = selected && st.sel.len() == 1 && st.group_at(slot).is_none();
     let moved = from != slot || added;
 
     let painter = ui.painter();
-    if selected {
+    if inverted {
         painter.rect_filled(rect, 0.0, OLED);
+    } else if selected {
+        painter.rect_filled(rect, 0.0, SEL_GREY);
     } else if resp.hovered() && !off {
         painter.rect_filled(rect, 0.0, OLED_HOVER);
     }
@@ -507,7 +565,7 @@ fn slot_row(ui: &mut egui::Ui, st: &ElekState, slot: usize, acts: &mut Vec<RowAc
             theme::DEVICE_ACCENT_BRIGHT,
         );
     }
-    let (fg, dim) = if selected {
+    let (fg, dim) = if inverted {
         (OLED_BG, Color32::from_rgb(60, 70, 66))
     } else {
         (OLED, OLED_DIM)
@@ -552,7 +610,7 @@ fn slot_row(ui: &mut egui::Ui, st: &ElekState, slot: usize, acts: &mut Vec<RowAc
     let uses_w = 30.0;
     let name_x = rect.left() + 8.0 + label_w;
     // The sample moved and patterns point at it: the push renumbers them.
-    let dot_c = if selected { OLED_BG } else { theme::DEVICE_ACCENT_BRIGHT };
+    let dot_c = if inverted { OLED_BG } else { theme::DEVICE_ACCENT_BRIGHT };
     if !off && from != slot && uses > 0 {
         painter.circle_filled(egui::pos2(name_x - 7.0, y), 2.5, dot_c);
     }
@@ -561,7 +619,7 @@ fn slot_row(ui: &mut egui::Ui, st: &ElekState, slot: usize, acts: &mut Vec<RowAc
     let changed = (!off && !e.is_empty()).then(|| st.changed_local.get(&e.key())).flatten();
     // Cut and waiting for a paste: faded, like cut files.
     let is_cut = st.clip.as_ref().is_some_and(|c| c.cut && !e.is_empty() && c.olds.contains(&(from as u16)));
-    let name_c = if selected {
+    let name_c = if inverted {
         fg
     } else if is_cut {
         OLED_DIM

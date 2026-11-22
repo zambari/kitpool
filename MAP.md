@@ -127,14 +127,21 @@ control→function tables are in [MAP_full.md](MAP_full.md) (not maintained).
   shared target for the drop itself: it builds a `SlotDrop` in
   `slot_landing` and works it out with `ElekState::plan`, which knows groups.
 - **Sample groups** (`ui/elek_view/groups.rs`) exist only in this app:
-  named runs of adjacent samples in one bank, always packed, moving as one
+  named runs of adjacent slots in one bank (empty ones allowed: a
+  *container*, filled first by drops into it), always packed, moving as one
   (dashed frame, name tab; drag by tab or frame sides). Every slot drop is
   planned first and refused if it would split a group or push one past its
   bank's end. Edits that don't know about groups go through `edit`, whose
   `repair_groups` keeps each group's longest packed run. Saved per unit
   (MIDI port name) by +Drive hash in `AppState::pool_groups`, synced by
   `App::sync_pool_groups`; a project gets a group back when those samples
-  sit packed in one bank. Presets also map filtered rows
+  sit packed in one bank. Empty members save as key `(0, 0)` plus the start slot (`PoolGroup::at`).
+  "Add empty … to other banks" is `spread_targets` / `spread_group`.
+  Right-click ▸ "Move to group" is `plan_join` (the end-of-group drop with an
+  explicit pick list, not the selection), listed per group in `slot_menu.rs`.
+  Clicking a frame side lines the other pane up on
+  its same-named group (`ElekState::align_group`, eased via `align[side]`
+  through `ping_scroll`). Presets also map filtered rows
   through `RowHit::slot_of` and warn about locked slots.
 - Device status and copy/paste feedback goes to the bottom status bar, not to
   banners above lists.
