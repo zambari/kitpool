@@ -236,7 +236,7 @@ impl ElekState {
         };
     }
 
-    fn is_empty_at(&self, slot: usize) -> bool {
+    pub(super) fn is_empty_at(&self, slot: usize) -> bool {
         self.project
             .as_ref()
             .is_some_and(|_| self.free(self.order[slot]))

@@ -167,6 +167,7 @@ impl App {
             }
             ElekEv::PushStale => {
                 st.busy = None;
+                st.adopt = None;
                 st.keep_blank.clear();
                 st.expect = None;
                 st.expect_patterns = None;
@@ -174,12 +175,25 @@ impl App {
                 st.confirm_stale = true;
             }
             ElekEv::Pushed(r) => match r {
+                Ok(n) if st.adopt.is_some() => {
+                    let p = st.adopt.take().expect("checked above");
+                    st.busy = None;
+                    st.proj.adopt(&p);
+                    st.pat_seen = st.proj.cells.clone();
+                    st.lib.patterns_changed();
+                    st.project = Some(p);
+                    st.status = format!("Live: sent {n} message(s) to the device (not read back)");
+                    self.refresh_elek_links();
+                }
                 Ok(n) => {
                     st.status = format!("Sent {n} messages; reading back to check…");
                     let cached = std::mem::take(&mut st.keep_blank);
                     self.elek_read(cached);
                 }
                 Err(e) => {
+                    if st.adopt.take().is_some() {
+                        st.pat_live = false;
+                    }
                     st.busy = None;
                     st.expect = None;
                     st.expect_patterns = None;

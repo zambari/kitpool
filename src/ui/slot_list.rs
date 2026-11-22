@@ -126,44 +126,164 @@ pub enum DropTarget {
     Insert(usize),
 }
 
-/// Modifier and upper/lower-half handling is identical in each slot view.
-pub fn drop_target(ui: &egui::Ui, rect: Rect, slot: usize) -> DropTarget {
-    ui.input(|i| {
-        if i.modifiers.ctrl || i.modifiers.alt {
-            DropTarget::Insert(
-                slot + usize::from(
-                    i.pointer
-                        .interact_pos()
-                        .is_some_and(|p| p.y > rect.center().y),
-                ),
-            )
-        } else {
-            DropTarget::Place(slot)
-        }
-    })
+/// Where in a drag the grabbed row sat: selected cells before it (the
+/// selection packs up when placed) and how far down its row the press was
+/// (0..1).
+#[derive(Clone, Copy, Default)]
+pub struct Grab {
+    pub before: usize,
+    pub frac: f32,
 }
 
-pub fn paint_drop(ui: &egui::Ui, rect: Rect, slot: usize, target: DropTarget, count: usize) {
-    let stroke = Stroke::new(2.0, theme::DEVICE_ACCENT_BRIGHT);
-    match target {
-        DropTarget::Insert(at) => {
-            ui.painter().hline(
-                rect.x_range(),
-                if at == slot {
-                    rect.top()
-                } else {
-                    rect.bottom()
-                },
-                stroke,
-            );
-        }
-        DropTarget::Place(_) => {
-            let r = Rect::from_min_size(
-                rect.min,
-                egui::vec2(rect.width(), rect.height() * count.max(1) as f32),
-            );
-            ui.painter()
-                .rect_stroke(r, 0.0, stroke, egui::StrokeKind::Inside);
+impl Grab {
+    /// `frac`: how far down the grabbed row the press was.
+    pub fn new(sel: &BTreeSet<usize>, slot: usize, frac: f32) -> Self {
+        Self {
+            before: sel.range(..slot).count(),
+            frac: frac.clamp(0.0, 0.999),
         }
     }
+}
+
+/// What differs between slot lists when dragging. Everything else (where a
+/// block lands, the feedback, the note) is shared.
+pub struct DropRules {
+    /// Lowest slot a drop may use (the sample pool's 000 is "off").
+    pub first: usize,
+    /// Slots in the whole list, across banks.
+    pub len: usize,
+    /// A plain drop inserts and shifts (⌥/⌃ swaps in place), instead of
+    /// the other way round. Sample slots are referenced by patterns, so
+    /// they default to swapping, which moves the fewest; presets are
+    /// copies and move freely.
+    pub insert_default: bool,
+}
+
+/// The row under a drag. Rows are `pitch` apart on screen (height plus any
+/// spacing, so the gaps count too); `slot_of(row)` maps a visible row to
+/// its slot, and `slot_of(rows)` is the slot after the last row. Lists that
+/// hide rows (filters) map through it; full lists are `first + row`.
+pub struct RowHit<'a> {
+    pub rect: Rect,
+    pub pitch: f32,
+    pub row: usize,
+    pub slot_of: &'a dyn Fn(usize) -> usize,
+}
+
+/// Where a drag over `hit` lands. A swap drop places the block the way it's
+/// held: the grabbed row lands under the pointer and snaps to the nearest
+/// row. An insert goes to the row boundary nearest the pointer.
+pub fn drop_target_rows(ui: &egui::Ui, hit: &RowHit, n: usize, grab: Grab, rules: &DropRules) -> DropTarget {
+    let (flip, y) = ui.input(|i| {
+        (
+            i.modifiers.ctrl || i.modifiers.alt,
+            i.pointer.interact_pos().map(|p| p.y),
+        )
+    });
+    let frac = y.map_or(0.5, |y| (y - hit.rect.top()) / hit.pitch);
+    if flip != rules.insert_default {
+        let at = (hit.slot_of)(hit.row + usize::from(frac > 0.5));
+        return DropTarget::Insert(at.clamp(rules.first, rules.len));
+    }
+    let row = (hit.row as isize + (frac - grab.frac).round() as isize).max(0) as usize;
+    let top = (hit.slot_of)(row).saturating_sub(grab.before);
+    let last = rules.len.saturating_sub(n.max(1)).max(rules.first);
+    DropTarget::Place(top.clamp(rules.first, last))
+}
+
+/// The slots a target's feedback covers: the block's new place, or for an
+/// insert the `n` slots after the line.
+pub fn landing_span(target: DropTarget, n: usize) -> std::ops::Range<usize> {
+    let at = match target {
+        DropTarget::Place(at) | DropTarget::Insert(at) => at,
+    };
+    at..at + n.max(1)
+}
+
+/// The slot order a drop would make (`order[new] = old`), to count what it
+/// touches before it happens.
+pub fn preview(len: usize, sel: &[usize], target: DropTarget, first: usize) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..len).collect();
+    match target {
+        DropTarget::Place(at) => {
+            place(&mut order, sel, at, first);
+        }
+        DropTarget::Insert(at) => insert(&mut order, sel, at, first),
+    }
+    order
+}
+
+/// The pointer note for a drop: what lands where, what else moves, and how
+/// to get the other kind of drop. `occupied` says a slot holds something.
+pub fn landing_note(
+    target: DropTarget,
+    sel: &BTreeSet<usize>,
+    rules: &DropRules,
+    label: impl Fn(usize) -> String,
+    occupied: impl Fn(usize) -> bool,
+) -> String {
+    let n = sel.len().max(1);
+    let other = if rules.insert_default { "⌥ swap in place instead" } else { "⌥ insert instead" };
+    match target {
+        DropTarget::Place(top) => {
+            let range = if n == 1 {
+                label(top)
+            } else {
+                format!("{}–{}", label(top), label(top + n - 1))
+            };
+            if sel.iter().copied().eq(top..top + n) {
+                return format!("Already at {range}");
+            }
+            let swaps = (top..top + n).filter(|t| !sel.contains(t) && occupied(*t)).count();
+            if swaps > 0 {
+                format!("Place at {range} · {swaps} swap into the freed slots\n{other}")
+            } else {
+                format!("Place at {range}\n{other}")
+            }
+        }
+        DropTarget::Insert(at) => {
+            let to = if at < rules.len { format!("before {}", label(at)) } else { "at the end".into() };
+            format!("Insert {to} · slots in between shift\n{other}")
+        }
+    }
+}
+
+/// Landing feedback: a bright line at the first boundary the drop lands on
+/// (`y.min`) and a tinted area down to `y.max`. Paint after the rows, so
+/// row fills don't cover it. `deny` paints it as refused.
+pub fn paint_landing(ui: &egui::Ui, x: egui::Rangef, y: egui::Rangef, target: DropTarget, deny: bool) {
+    let c = if deny { theme::DENY } else { theme::DEVICE_ACCENT_BRIGHT };
+    let area = Rect::from_x_y_ranges(x, y);
+    let p = ui.painter();
+    match target {
+        DropTarget::Place(_) => {
+            p.rect_filled(area, 0.0, c.gamma_multiply(0.22));
+            p.rect_stroke(area, 0.0, Stroke::new(1.0, c), egui::StrokeKind::Inside);
+        }
+        DropTarget::Insert(_) => {
+            p.rect_filled(area, 0.0, c.gamma_multiply(0.10));
+        }
+    }
+    // The insertion line, with end ticks so it reads as "between rows".
+    let s = Stroke::new(2.5, c);
+    p.hline(x, y.min, s);
+    for x in [x.min, x.max] {
+        p.vline(x, (y.min - 4.0)..=(y.min + 4.0), s);
+    }
+}
+
+/// Scrolls a list while a drag hovers near its top or bottom edge, faster
+/// the closer it gets. Call inside the scroll area.
+pub fn drag_autoscroll(ui: &egui::Ui, edge: f32) {
+    let view = ui.clip_rect();
+    let Some(p) = ui.ctx().pointer_latest_pos().filter(|p| view.contains(*p)) else { return };
+    let d = if p.y < view.top() + edge {
+        view.top() + edge - p.y
+    } else if p.y > view.bottom() - edge {
+        view.bottom() - edge - p.y
+    } else {
+        return;
+    };
+    ui.scroll_with_delta_animation(egui::vec2(0.0, d * 0.35), egui::style::ScrollAnimation::none());
+    ui.ctx().request_repaint();
 }

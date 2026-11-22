@@ -96,6 +96,48 @@ impl ProjEd {
         self.refresh(p);
     }
 
+    /// The edits just went to the device and `p` is the project built from
+    /// them (a Live push, not read back): the cells start over as read, the
+    /// view (selection, folds) stays. Undo and copies that point at the
+    /// changed slots go, since those slots now hold something else; copies
+    /// of other patterns keep working, and the carry-over forms cover the rest.
+    pub fn adopt(&mut self, p: &ElekProject) {
+        let changed: BTreeSet<u8> = (0..self.cells.len()).filter(|&i| self.cells[i] != Cell::as_read(i)).map(|i| i as u8).collect();
+        let touched = |mut src: Box<dyn Iterator<Item = u8> + '_>| src.any(|s| changed.contains(&s));
+        let clip = std::mem::take(&mut self.clip);
+        let clip = if clip.iter().any(|c| touched(Box::new(c.sources()))) { Vec::new() } else { clip };
+        let keep_t = |t: &Option<TrackClip>| {
+            t.as_ref().is_some_and(|t| !changed.contains(&(t.from as u8)) && !touched(Box::new(t.tracks.iter().filter_map(|(_, s)| *s))))
+        };
+        let tclip_ev = if keep_t(&self.tclip_ev) { self.tclip_ev.take() } else { None };
+        let tclip_snd = if keep_t(&self.tclip_snd) { self.tclip_snd.take() } else { None };
+        let sel = std::mem::take(&mut self.sel);
+        let cursor = self.cursor;
+        let open = std::mem::take(&mut self.open);
+        let snd_open = std::mem::take(&mut self.snd_open);
+        let (tsel_pat, tsel, tanchor) = (self.tsel_pat, std::mem::take(&mut self.tsel), self.tanchor);
+        self.reset(p);
+        if self.cells.is_empty() {
+            return;
+        }
+        self.clip = clip;
+        self.tclip_ev = tclip_ev;
+        self.tclip_snd = tclip_snd;
+        self.sel = sel;
+        self.cursor = cursor;
+        self.open = open;
+        self.snd_open = snd_open;
+        self.tsel_pat = tsel_pat;
+        self.tsel = tsel;
+        self.tanchor = tanchor;
+    }
+
+    /// A question about the last edit is open (a track paste that would
+    /// lose trigs): Live waits for the answer.
+    pub fn asking(&self) -> bool {
+        self.confirm.is_some()
+    }
+
     /// The project's patterns changed under the same slots (another one
     /// arrived, or the read finished): keep the edits, update what's loaded.
     pub fn refresh(&mut self, p: &ElekProject) {

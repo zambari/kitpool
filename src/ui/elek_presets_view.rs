@@ -4,7 +4,6 @@
 //! permutations become grouped native preset moves/swaps only after bank reads.
 
 use crate::device::presets::{Preset, PresetEntry, PresetOp, PresetPush, PresetSlot, tag_names};
-use crate::ui::drag_drop::ResponseDnd;
 use crate::ui::elek_view::{self, ElekIntent, ElekState};
 use crate::ui::slot_list::{self, DropTarget};
 use crate::ui::sound_tags;
@@ -28,6 +27,8 @@ pub struct PresetView {
     selected: [Option<u32>; 2],
     sel: BTreeSet<usize>,
     cursor: Option<usize>,
+    /// Where the dragged block was grabbed, so it lands the way it's held.
+    grab: slot_list::Grab,
     active: usize,
     reveal: Option<usize>,
     undo: Vec<usize>,
@@ -879,6 +880,7 @@ impl Default for PresetView {
             selected: [None; 2],
             sel: BTreeSet::new(),
             cursor: None,
+            grab: slot_list::Grab::default(),
             active: 0,
             reveal: None,
             undo: Vec::new(),
@@ -1444,6 +1446,11 @@ fn pane(
             st.presets.reveal = None;
         }
         scroll.show_rows(ui, 20.0, rows.len(), |ui, range| {
+            // Rows sit `pitch` apart; the spacing between them belongs to
+            // the row above, so a drag over a gap still has a target.
+            let pitch = 20.0 + ui.spacing().item_spacing.y;
+            let dragging = can_edit && egui::DragAndDrop::has_payload_of_type::<PresetDrag>(ui.ctx());
+            let mut hover = None;
             for row in range {
                 let (slot, name, filled, changed, tags) = &rows[row];
                 if let Some(src) = &row_sources[row] {
@@ -1524,34 +1531,15 @@ fn pane(
                         st.presets.select(banks, side, index, egui::Modifiers::NONE);
                     }
                     st.presets.active = side;
+                    let frac = ui.input(|i| i.pointer.press_origin()).map_or(0.5, |p| (p.y - r.top()) / pitch);
+                    st.presets.grab = slot_list::Grab::new(&st.presets.sel, index, frac);
                     resp.dnd_set_drag_payload(PresetDrag);
                 }
                 if can_edit && resp.hovered() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
                 }
-                if can_edit {
-                    let target = slot_list::drop_target(ui, r, index);
-                    if over.dnd_hover_payload::<PresetDrag>().is_some() {
-                        slot_list::paint_drop(
-                            ui,
-                            r,
-                            index,
-                            target,
-                            st.presets.sel.len().min(banks.len() * 256 - index),
-                        );
-                        theme::pointer_note(
-                            ui.ctx(),
-                            match target {
-                                DropTarget::Insert(_) => "Insert selection and shift slots",
-                                DropTarget::Place(_) => "Place selection / swap occupied slots",
-                            },
-                            theme::DEVICE_ACCENT_BRIGHT,
-                        );
-                    }
-                    if over.release_payload::<PresetDrag>().is_some() {
-                        st.presets.active = side;
-                        edit = Some(Edit::Drop(target));
-                    }
+                if dragging && ui.rect_contains_pointer(egui::Rect::from_min_size(r.min, egui::vec2(r.width(), pitch))) {
+                    hover = Some((row, r));
                 }
                 resp.context_menu(|ui| {
                     ui.label(format!("Preset {bank}:{slot:03} · {name}"));
@@ -1629,6 +1617,41 @@ fn pane(
                         }
                     });
                 });
+            }
+            if let Some((row, r)) = hover {
+                let slot_of = |i: usize| rows.get(i).map_or(start + 256, |x| start + x.0 as usize - 1);
+                let row_of = |s: usize| rows.partition_point(|x| start + (x.0 as usize) - 1 < s);
+                let rules = slot_list::DropRules { first: 0, len: banks.len() * 256, insert_default: true };
+                let sel = &st.presets.sel;
+                let n = sel.len().max(1);
+                let hit = slot_list::RowHit { rect: r, pitch, row, slot_of: &slot_of };
+                let target = slot_list::drop_target_rows(ui, &hit, n, st.presets.grab, &rules);
+                // Locked presets anywhere the drop changes make the push fail.
+                let order = slot_list::preview(rules.len, &sel.iter().copied().collect::<Vec<_>>(), target, 0);
+                let locked = order.iter().enumerate()
+                    .filter(|(i, old)| i != *old && st.presets.locked(&location(banks, *i), full_ops))
+                    .count();
+                let mut note = slot_list::landing_note(target, sel, &rules,
+                    |i| { let l = location(banks, i); format!("{}:{:03}", l.bank, l.slot) },
+                    |i| { let l = location(banks, i); edits.get(&l).cloned().unwrap_or_else(|| st.presets.base(&l)).is_some() });
+                if locked > 0 {
+                    note = format!("{} locked on the device: the push will be refused\n{note}", locked);
+                }
+                // Hidden rows (filter, hide empty) are skipped: the area covers
+                // the visible rows the landing slots fall on.
+                let span = slot_list::landing_span(target, n);
+                let y = |s: usize| r.top() + (row_of(s) as f32 - row as f32) * pitch;
+                let x = r.x_range();
+                slot_list::paint_landing(ui, x, egui::Rangef::new(y(span.start), y(span.end).max(y(span.start) + 3.0)), target, locked > 0);
+                theme::pointer_note(ui.ctx(), &note, if locked > 0 { theme::DENY } else { theme::DEVICE_ACCENT });
+                if ui.input(|i| i.pointer.any_released()) {
+                    egui::DragAndDrop::clear_payload(ui.ctx());
+                    st.presets.active = side;
+                    edit = Some(Edit::Drop(target));
+                }
+            }
+            if dragging {
+                slot_list::drag_autoscroll(ui, pitch * 1.5);
             }
         });
     });

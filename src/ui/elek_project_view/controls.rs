@@ -17,6 +17,29 @@ pub fn show(ui: &mut egui::Ui, st: &mut ElekState) -> Vec<ElekIntent> {
         if ui.add_enabled(!busy && changed > 0, egui::Button::new("↺ Reset")).on_hover_text("Back to the patterns as read from the device").clicked() {
             ed.edit(|c| *c = (0..PATTERNS).map(Cell::as_read).collect());
         }
+        // The whole project read: the pushed project is built here from
+        // what was sent, and that needs every message.
+        let can_live = st.project.as_ref().is_some_and(|p| {
+            p.read_only.is_none() && p.from_file.is_none() && !p.partial && p.sounds_read
+                && p.patterns.as_ref().is_ok_and(|pats| pats.read_only.is_none())
+        });
+        let was = st.pat_live;
+        ui.add_enabled_ui(can_live || st.pat_live, |ui| {
+            ui.toggle_value(&mut st.pat_live, "⚡ Live")
+                .on_hover_text(
+                    "Push pattern edits straight away, without asking and without reading the project back: \
+                     the patterns as sent become the new state here. Only the changed patterns go out, so \
+                     changes made on the device to other patterns are kept; ones made to the pushed patterns \
+                     are overwritten. Sample pool or sound pool changes still need a normal push. \
+                     Undo doesn't reach past a live push. Reload to check against the device.",
+                )
+                .on_disabled_hover_text("Needs the whole project read from the device (let the read finish, or reload)");
+        });
+        if st.pat_live && !was {
+            st.pat_seen = st.proj.cells.clone();
+            st.pat_edited = Some(std::time::Instant::now());
+            st.status = "Live patterns: pattern edits go to the device right away, not read back".into();
+        }
     });
     if st.project.is_none() {
         elek_view::load_screen(ui, st, &mut out);

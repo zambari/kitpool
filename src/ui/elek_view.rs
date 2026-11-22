@@ -39,6 +39,8 @@ pub struct ElekState {
     pub order: Vec<u16>,
     /// A slot drag is under way (until the button comes up).
     slot_drag: bool,
+    /// Where the dragged block was grabbed, so it lands the way it's held.
+    slot_grab: slot_list::Grab,
     /// +Drive paths by `(hash, length)`.
     pub names: HashMap<(u32, u32), String>,
     /// Pool files we have a local copy of (uploaded from it, or fetched to
@@ -148,6 +150,15 @@ pub struct ElekState {
     pub live: bool,
     /// When the pool was last edited, so live pushes wait for a pause.
     pub edited_at: Option<std::time::Instant>,
+    /// Patterns page Live: pattern-only edits go to the device after a
+    /// pause and aren't read back; the project is updated from what was sent.
+    pub pat_live: bool,
+    /// The pattern cells last seen by the Live tick, and when they changed.
+    pub pat_seen: Vec<crate::device::Cell>,
+    pub pat_edited: Option<std::time::Instant>,
+    /// The project as it will be once the Live pattern push under way lands,
+    /// taken instead of a read-back.
+    pub adopt: Option<Box<ElekProject>>,
     /// Slots cut or copied (⌘X / ⌘C). A cut pastes back into the pool
     /// (moving them); either pastes into a local file pane (downloading them).
     clip: Option<PoolClip>,
@@ -252,7 +263,8 @@ struct SlotDrag;
 
 enum RowAct {
     Click(usize, egui::Modifiers),
-    DragStart(usize),
+    /// `(slot, how far down the row it was grabbed)`.
+    DragStart(usize, f32),
     DropBefore(usize),
     DropOn(usize),
     /// `(slot, how many)`.

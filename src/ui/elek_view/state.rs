@@ -135,6 +135,7 @@ impl ElekState {
         self.proj.xclip = xclip;
         self.expect_patterns = None;
         self.expect_sounds = None;
+        self.adopt = None;
         self.keep_blank.clear();
         self.lib.forget();
         if let Some(ctl) = &self.reading {

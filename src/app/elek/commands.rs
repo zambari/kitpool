@@ -197,6 +197,7 @@ impl App {
         ));
         let model = p.model;
         let settings = p.settings_data().to_vec();
+        self.elek.adopt = None;
         self.elek.keep_blank = p.untouched_blanks(&self.elek.order, &self.elek.fills, cells, sounds);
         self.elek.expect = Some(self.elek.new_pool());
         self.elek.busy = Some((if live { "Live push" } else { "Sending to device" }.into(), 0, msgs.len()));
@@ -240,6 +241,88 @@ impl App {
             return;
         }
         self.elek_push(true, true);
+    }
+
+    /// Patterns page Live: once pattern edits pause, push them and take the
+    /// project as sent instead of reading it back. Only pattern-only edits:
+    /// sample pool and sound pool changes still go through a normal push.
+    pub(in crate::app) fn live_pattern_tick(&mut self, ctx: &egui::Context) {
+        const SETTLE: std::time::Duration = std::time::Duration::from_millis(400);
+        let st = &mut self.elek;
+        if !st.pat_live {
+            return;
+        }
+        let ok = st.project.as_ref().is_some_and(|p| {
+            p.read_only.is_none() && p.from_file.is_none() && !p.partial && p.sounds_read
+                && p.patterns.as_ref().is_ok_and(|pats| pats.read_only.is_none())
+        });
+        if !ok {
+            // A read under way (a reload) comes back whole: wait for it.
+            if st.reading.is_none() {
+                st.pat_live = false;
+                st.status = "Live patterns off: needs the whole project read from the device".into();
+            }
+            return;
+        }
+        if st.pat_seen != st.proj.cells {
+            st.pat_seen = st.proj.cells.clone();
+            st.pat_edited = Some(std::time::Instant::now());
+        }
+        if st.proj.changed() == 0 || st.busy.is_some() || st.confirm_push || st.confirm_stale || st.proj.asking() {
+            return;
+        }
+        if st.pool_changed() > 0 || st.lib.sound_changed() > 0 {
+            let hint = "Live patterns waiting: sample or sound pool changes are pending; push those first (they need a read-back)";
+            if st.status != hint {
+                st.status = hint.into();
+            }
+            return;
+        }
+        if let Some(t) = st.pat_edited {
+            let since = t.elapsed();
+            if since < SETTLE {
+                ctx.request_repaint_after(SETTLE - since);
+                return;
+            }
+        }
+        self.elek_push_patterns();
+    }
+
+    /// Send the pattern edits and keep the project built from them, with no
+    /// read-back afterwards.
+    fn elek_push_patterns(&mut self) {
+        let st = &mut self.elek;
+        let Some(p) = &st.project else { return };
+        let cells = &st.proj.cells;
+        let sounds = &st.lib.sounds;
+        let msgs = p.build_push(&st.order, &st.fills, cells, sounds);
+        let after = match p.after_push(&st.order, &st.fills, cells, sounds) {
+            Ok(a) => a,
+            Err(e) => {
+                st.pat_live = false;
+                st.status = format!("Live patterns off: can't build the pushed project here ({e}); push normally");
+                return;
+            }
+        };
+        if msgs.is_empty() {
+            // Edits that come out the same as read (moved and moved back).
+            st.proj.adopt(&after);
+            st.pat_seen = st.proj.cells.clone();
+            return;
+        }
+        for (i, c) in cells.iter().enumerate().filter(|(i, c)| **c != crate::device::Cell::as_read(*i)) {
+            crate::log::line(format!("elek-pat: live pushing {}: {:?}", crate::device::patterns::label(i), c));
+        }
+        crate::log::line(format!("elek: live pattern push, {} of {} dump messages, no read-back", msgs.len(), p.msg_count()));
+        let model = p.model;
+        let settings = p.settings_data().to_vec();
+        st.adopt = Some(after);
+        st.expect = None;
+        st.expect_patterns = None;
+        st.expect_sounds = None;
+        st.keep_blank.clear();
+        st.busy = Some(("Live push".into(), 0, msgs.len()));
+        self.device.elek(ElekCmd::Push { msgs, settings, force: true, model });
     }
 
     /// Read the project from the device. `cached`: empty patterns known

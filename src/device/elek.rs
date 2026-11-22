@@ -795,6 +795,33 @@ impl ElekProject {
         out
     }
 
+    /// The project as the device holds it after pushing these edits, built
+    /// here instead of read back (Live pattern pushes). Messages keep their
+    /// dump order; patterns loaded from files are dropped, since they're
+    /// now placed in their slots.
+    pub fn after_push(&self, order: &[u16], fills: &std::collections::HashMap<u16, PoolEntry>, cells: &[Cell], sounds: &[library::SoundCell]) -> Result<Box<Self>, String> {
+        if self.partial || !self.sounds_read || self.from_file.is_some() {
+            return Err("needs the whole project read from the device".into());
+        }
+        let new: std::collections::HashMap<(u8, u8), Vec<u8>> = self
+            .edited_msgs(order, fills, cells, sounds)
+            .into_iter()
+            .map(|(k, i, d)| ((k, i), d))
+            .collect();
+        let msgs = self.msgs[..self.base]
+            .iter()
+            .map(|m| match new.get(&(m.kind, m.index)) {
+                Some(d) if *d != m.data => DumpMsg { kind: m.kind, index: m.index, raw: build_dump(self.model, m.kind, m.index, d), data: d.clone() },
+                _ => m.clone(),
+            })
+            .collect();
+        let p = Self::parse(self.model, msgs, false)?;
+        if let Some(why) = &p.read_only {
+            return Err(why.clone());
+        }
+        Ok(Box::new(p))
+    }
+
     /// A project from payloads saved earlier (see `file`).
     pub(super) fn from_payloads(model: Model, msgs: Vec<(u8, u8, Vec<u8>)>) -> Result<Self, String> {
         let msgs = msgs

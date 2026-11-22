@@ -193,8 +193,17 @@ pub(super) fn slot_pane(ui: &mut egui::Ui, st: &mut ElekState, side: usize) {
             ui.spacing_mut().item_spacing.y = 0.0;
             theme::always_show_scrollbar(ui);
             scroll.show_rows(ui, ROW_H, rows, |ui, range| {
+                let mut landing = None;
                 for i in range {
-                    slot_row(ui, st, first + i, &mut acts);
+                    slot_row(ui, st, first + i, &mut acts, &mut landing);
+                }
+                // Painted over all rows, so later rows' fills don't hide it.
+                if let Some((x, y, target, note)) = landing {
+                    slot_list::paint_landing(ui, x, y, target, false);
+                    theme::pointer_note(ui.ctx(), &note, theme::DEVICE_ACCENT);
+                }
+                if st.slot_drag {
+                    slot_list::drag_autoscroll(ui, ROW_H * 1.5);
                 }
             })
         });
@@ -213,7 +222,7 @@ pub(super) fn slot_pane(ui: &mut egui::Ui, st: &mut ElekState, side: usize) {
     for a in acts {
         let edits = !matches!(
             a,
-            RowAct::Click(..) | RowAct::DragStart(_) | RowAct::Local(..) | RowAct::ShowOriginal(_) | RowAct::Rename(_) | RowAct::Clip(..) | RowAct::DropClip
+            RowAct::Click(..) | RowAct::DragStart(..) | RowAct::Local(..) | RowAct::ShowOriginal(_) | RowAct::Rename(_) | RowAct::Clip(..) | RowAct::DropClip
         );
         if locked && edits {
             st.status = "Wait a moment: the device is busy, and an edit now would be lost".into();
@@ -229,12 +238,13 @@ pub(super) fn slot_pane(ui: &mut egui::Ui, st: &mut ElekState, side: usize) {
                     }
                 }
             }
-            RowAct::DragStart(s) => {
+            RowAct::DragStart(s, frac) => {
                 st.slot_drag = true;
                 st.active = side;
                 if !st.sel.contains(&s) {
                     st.click(s, egui::Modifiers::NONE);
                 }
+                st.slot_grab = slot_list::Grab::new(&st.sel, s, frac);
             }
             RowAct::DropOn(s) => {
                 st.active = side;
@@ -279,8 +289,26 @@ pub(super) fn slot_pane(ui: &mut egui::Ui, st: &mut ElekState, side: usize) {
     }
 }
 
+/// Drop feedback to paint once the rows are drawn: `(row x range, landing
+/// y range, target, pointer note)`.
+type Landing = (egui::Rangef, egui::Rangef, DropTarget, String);
+
+/// Where a slot drag over `slot` lands, its feedback and its note. Sample
+/// slots are referenced by patterns, so a plain drop swaps in place, which
+/// moves the fewest samples.
+fn slot_landing(ui: &egui::Ui, st: &ElekState, rect: egui::Rect, slot: usize) -> Landing {
+    let rules = slot_list::DropRules { first: 1, len: st.order.len(), insert_default: false };
+    let n = st.sel.len().max(1);
+    let hit = slot_list::RowHit { rect, pitch: ROW_H, row: slot, slot_of: &|r| r };
+    let target = slot_list::drop_target_rows(ui, &hit, n, st.slot_grab, &rules);
+    let note = slot_list::landing_note(target, &st.sel, &rules, |s| st.label(s), |s| !st.is_empty_at(s));
+    let span = slot_list::landing_span(target, n);
+    let y = |s: usize| rect.top() + (s as f32 - slot as f32) * ROW_H;
+    (rect.x_range(), egui::Rangef::new(y(span.start), y(span.end)), target, note)
+}
+
 /// One slot row, laid out like the device's file list.
-fn slot_row(ui: &mut egui::Ui, st: &ElekState, slot: usize, acts: &mut Vec<RowAct>) {
+fn slot_row(ui: &mut egui::Ui, st: &ElekState, slot: usize, acts: &mut Vec<RowAct>, landing: &mut Option<Landing>) {
     if st.project.is_none() { return; }
     let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW_H), Sense::empty());
     let from = st.order[slot] as usize;
@@ -419,6 +447,7 @@ fn slot_row(ui: &mut egui::Ui, st: &ElekState, slot: usize, acts: &mut Vec<RowAc
     );
 
     if off {
+        slot_drop(ui, st, rect, slot, &resp, acts, landing);
         return;
     }
     let info = SlotRowInfo {
@@ -449,18 +478,43 @@ fn slot_row(ui: &mut egui::Ui, st: &ElekState, slot: usize, acts: &mut Vec<RowAc
         acts.push(RowAct::Local(e.key(), false));
     }
     if resp.drag_started() {
-        acts.push(RowAct::DragStart(slot));
+        let frac = ui
+            .input(|i| i.pointer.press_origin())
+            .map_or(0.5, |p| (p.y - rect.top()) / rect.height());
+        acts.push(RowAct::DragStart(slot, frac));
         resp.dnd_set_drag_payload(SlotDrag);
     }
-    // Drop: by default the selection lands in this slot and the ones after it,
-    // swapping with what's there. With ⌃ or ⌥ held it's inserted instead,
-    // before this row (top half) or after it (bottom half), shifting the rest.
-    let target = slot_list::drop_target(ui, rect, slot);
-    if resp.dnd_hover_payload::<SlotDrag>().is_some() {
-        let n = st.sel.len().max(1).min(st.order.len() - slot);
-        slot_list::paint_drop(ui, rect, slot, target, n);
-    }
     slot_file_drop(ui, st, &info, &resp, acts);
+    slot_drop(ui, st, rect, slot, &resp, acts, landing);
+
+    resp.context_menu(|ui| slot_menu(ui, st, &info, acts));
+    if !e.is_empty() {
+        resp.on_hover_text(slot_tooltip(st, &info));
+    } else if filling.is_some() {
+        resp.on_hover_text("Uploading to the +Drive, then checking the device can find it. Pushing waits for this.");
+    }
+}
+
+/// A slot drag over this row: by default the selection lands as a block the
+/// way it's held (grabbed row under the pointer), swapping with what's
+/// there. With ⌃ or ⌥ it's inserted at the nearest row boundary instead,
+/// shifting the slots in between.
+fn slot_drop(
+    ui: &egui::Ui,
+    st: &ElekState,
+    rect: egui::Rect,
+    slot: usize,
+    resp: &egui::Response,
+    acts: &mut Vec<RowAct>,
+    landing: &mut Option<Landing>,
+) {
+    let over = resp.dnd_hover_payload::<SlotDrag>().is_some() || (st.slot_drag && resp.contains_pointer());
+    if !over {
+        return;
+    }
+    let l = slot_landing(ui, st, rect, slot);
+    let target = l.2;
+    *landing = Some(l);
     // Our own drag flag too: if anything else cleared egui's payload this
     // frame, the drop still lands.
     let released = resp.contains_pointer() && ui.input(|i| i.pointer.any_released());
@@ -469,13 +523,6 @@ fn slot_row(ui: &mut egui::Ui, st: &ElekState, slot: usize, acts: &mut Vec<RowAc
             DropTarget::Insert(at) => RowAct::DropBefore(at),
             DropTarget::Place(at) => RowAct::DropOn(at),
         });
-    }
-
-    resp.context_menu(|ui| slot_menu(ui, st, &info, acts));
-    if !e.is_empty() {
-        resp.on_hover_text(slot_tooltip(st, &info));
-    } else if filling.is_some() {
-        resp.on_hover_text("Uploading to the +Drive, then checking the device can find it. Pushing waits for this.");
     }
 }
 

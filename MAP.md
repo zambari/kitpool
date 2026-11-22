@@ -80,6 +80,11 @@ control→function tables are in [MAP_full.md](MAP_full.md) (not maintained).
 - A read stopped before the sound pool arrives leaves `sounds_read` false and
   **blocks pool pushes** (`ElekState::pool_pushable`), because pool pushes
   renumber sound locks in every pattern.
+- **Two Live modes.** Samples page ⚡ (`ElekState::live`, `live_push_tick`)
+  pushes pool edits and reads back in full. Patterns page ⚡
+  (`pat_live`, `live_pattern_tick`) pushes pattern-only edits with **no
+  read-back**: `ElekProject::after_push` builds the project as sent, kept in
+  `ElekState::adopt` until `Pushed`, then `ProjEd::adopt` (keeps selection).
 - DT1 answers `0x63` with kit track sounds, so its sound pool comes only from
   the whole dump.
 - **Copies carry over to another project.** Pattern payloads point at
@@ -104,6 +109,12 @@ control→function tables are in [MAP_full.md](MAP_full.md) (not maintained).
   `Panels::all_on()` and the intro (`app/intro.rs`, after the first sample
   loads) switches off its way to the default. Change both together.
 - Tooltips don't show mid-drag; use `theme::pointer_note`.
+- **Slot drags share one path** in `slot_list` (`Grab`, `drop_target_rows`,
+  `landing_note`, `paint_landing` after all rows, `drag_autoscroll`); each
+  list passes `DropRules`. Samples default to swap-in-place (patterns point
+  at slots, so swaps move the fewest); presets default to insert (they're
+  copies, order is free). ⌥/⌃ flips either. Presets also map filtered rows
+  through `RowHit::slot_of` and warn about locked slots.
 - Device status and copy/paste feedback goes to the bottom status bar, not to
   banners above lists.
 
