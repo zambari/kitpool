@@ -195,6 +195,23 @@ notices when the device is plugged in or out and reconnects on its own.
 
 
 
+#### Groups: keep related sounds together
+
+![Samples page: two bank panes, the left holding a "kit" group, the right split into "kick", "hats", "snare" and "fx" groups](docs/groups.png)
+
+Groups let you mark a run of RAM samples (on **Samples**) or presets (on
+**Presets**) as belonging together, say `kick`, `hats`, `snare`, `fx`. A
+group is KitPool's own bookkeeping: it's stored locally, never written to
+the device. Each group is drawn as a named, coloured frame and moves as one:
+drag it anywhere, drop slots into it to add them, or drag slots out to
+remove them. Clicking a group's frame in one pane scrolls the other pane to
+the group of the same name, so matching regions of two banks line up for
+comparison. The group bar at the bottom of the page reorders groups within
+the bank. Hold **⌥** while dragging a group into the other pane to split
+it: the second half becomes a group of the same name there, the first half
+stays. That way each bank can keep its kicks, hats and snares in the same
+neighbourhood of the pool.
+
 #### Samples: reorder and clean up the pool
 
 - Drag a slot onto any other (in any bank) to insert it there: the samples
