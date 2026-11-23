@@ -295,7 +295,7 @@ pub fn factory_locked(ctx: &Context) -> bool {
 /// `Some(true)` relaunches anyway (the edits are lost).
 pub fn confirm_relaunch_unpushed(ctx: &Context, units: &[(String, usize)]) -> Option<bool> {
     let mut answer = None;
-    Modal::new(Id::new("relaunch_unpushed_modal")).show(ctx, |ui| {
+    Modal::new(Id::unique("relaunch_unpushed_modal")).show(ctx, |ui| {
         ui.set_width(440.0);
         ui.heading("Relaunch with unpushed device edits?");
         ui.add_space(6.0);
