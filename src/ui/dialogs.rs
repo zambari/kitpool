@@ -291,6 +291,49 @@ pub fn factory_locked(ctx: &Context) -> bool {
 /// Confirm reading a sample off the device into the editor. Over USB MIDI
 /// that is slow, so say so first. `Some(true)` = go, `Some(false)` =
 /// cancelled, `None` = still open.
+/// "New build: relaunch" with Device-view edits not pushed to the device.
+/// `Some(true)` relaunches anyway (the edits are lost).
+pub fn confirm_relaunch_unpushed(ctx: &Context, units: &[(String, usize)]) -> Option<bool> {
+    let mut answer = None;
+    Modal::new(Id::new("relaunch_unpushed_modal")).show(ctx, |ui| {
+        ui.set_width(440.0);
+        ui.heading("Relaunch with unpushed device edits?");
+        ui.add_space(6.0);
+        ui.label(
+            "These changes exist only in this session and haven't been pushed to the device. \
+             Relaunching drops them.",
+        );
+        ui.add_space(4.0);
+        for (unit, n) in units {
+            ui.label(format!(
+                "• {}: {n} changed slot{}",
+                crate::device::short_name(unit),
+                if *n == 1 { "" } else { "s" }
+            ));
+        }
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            if ui.button("Cancel").on_hover_text("Esc").clicked() {
+                answer = Some(false);
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button(RichText::new("Relaunch and drop them").color(crate::ui::theme::DENY))
+                    .clicked()
+                {
+                    answer = Some(true);
+                }
+            });
+        });
+    });
+    // Esc cancels; Enter is deliberately not a shortcut to drop the edits.
+    ctx.input_mut(|i| {
+        if i.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
+            answer = Some(false);
+        }
+    });
+    answer
+}
+
 pub fn confirm_device_load(ctx: &Context, path: &std::path::Path, bytes: u64) -> Option<bool> {
     let mut answer = None;
     let name = path

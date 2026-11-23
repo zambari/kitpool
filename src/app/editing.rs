@@ -762,7 +762,7 @@ impl App {
             total_bytes: bytes,
             local_names: Default::default(),
         };
-        let id = self.run_device(task, &format!("Loading {name}"), 1, bytes);
+        let id = self.run_device_next(task, &format!("Loading {name}"), 1, bytes);
         self.device_origin = Some((local.clone(), src_path));
         self.device_load = Some((id, local));
         self.status = format!("Fetching {name} from the device…");

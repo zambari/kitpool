@@ -361,6 +361,9 @@ pub struct App {
     build_watch: relaunch::BuildWatch,
     /// The window is closing to start the new build.
     relaunch: bool,
+    /// "New build: relaunch" clicked with device edits not pushed: the
+    /// units holding them, waiting for the user to confirm.
+    relaunch_ask: Option<Vec<(String, usize)>>,
     /// About box → Reset state: the window is closing to start fresh, so
     /// the last save removes the saved state instead of writing it.
     reset_state: bool,
@@ -419,6 +422,9 @@ pub struct App {
     /// Sample groups per unit, saved with the app state. The shown unit's
     /// list is handed to `elek` and taken back when it changes.
     pool_groups: std::collections::BTreeMap<String, Vec<state::PoolGroup>>,
+    /// Group colours by name (`AppState::group_hues`), shared by all
+    /// units; copied into whichever `elek` is shown.
+    group_hues: std::collections::BTreeMap<String, f32>,
     parked_units: std::collections::HashMap<String, units::UnitCtx>,
     /// Applying a parked unit's events: leave the shown tabs alone.
     background: bool,
@@ -457,6 +463,13 @@ impl App {
             } else {
                 self.pool_groups.insert(unit, self.elek.saved_groups.clone());
             }
+        }
+        // Hues are app-wide but `elek` is per unit: take edits back, and
+        // hand the map to a unit that was parked when it changed.
+        if std::mem::take(&mut self.elek.hues_dirty) {
+            self.group_hues = self.elek.group_hues.clone();
+        } else if self.elek.group_hues != self.group_hues {
+            self.elek.group_hues = self.group_hues.clone();
         }
     }
 

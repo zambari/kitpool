@@ -374,8 +374,35 @@ impl App {
         total_items: usize,
         total_bytes: u64,
     ) -> u64 {
+        self.run_device_at(task, label, total_items, total_bytes, false)
+    }
+
+    /// Like [`Self::run_device`], but ahead of device jobs already waiting:
+    /// for a sample someone clicked to play or open.
+    pub(super) fn run_device_next(
+        &mut self,
+        task: device::Task,
+        label: &str,
+        total_items: usize,
+        total_bytes: u64,
+    ) -> u64 {
+        self.run_device_at(task, label, total_items, total_bytes, true)
+    }
+
+    fn run_device_at(
+        &mut self,
+        task: device::Task,
+        label: &str,
+        total_items: usize,
+        total_bytes: u64,
+        next: bool,
+    ) -> u64 {
         let (id, cancel) = self.jobs.register();
-        self.device.run(id, cancel, task);
+        if next {
+            self.device.run_next(id, cancel, task);
+        } else {
+            self.device.run(id, cancel, task);
+        }
         self.active_jobs.push(ActiveJob {
             unit: device::active_unit(),
             ..ActiveJob::new(id, label, total_items, total_bytes, false)
@@ -804,7 +831,26 @@ impl App {
                         self.batch.absorb(a, cancelled);
                     }
                     self.active_jobs.retain(|a| a.id != job);
-                    self.pool_fetch_finished(job, !cancelled && errors.is_empty());
+                    // Factory reads fail file by file: one line and one
+                    // popup per batch, not one per file. Inside a queue of
+                    // fetches they're skipped without a word, so the queue
+                    // runs on; a lone request still reports them.
+                    let (locked, mut errors): (Vec<_>, Vec<_>) = errors
+                        .into_iter()
+                        .partition(|e| e.ends_with(device::FACTORY_LOCKED));
+                    let skipped = !locked.is_empty() && self.pool_fetch.is_queued_job(job);
+                    if !locked.is_empty() && !skipped {
+                        errors.push(format!(
+                            "{} file(s) skipped: {}",
+                            locked.len(),
+                            device::FACTORY_LOCKED
+                        ));
+                        if !self.factory_warned {
+                            self.factory_warned = true;
+                            self.factory_popup = true;
+                        }
+                    }
+                    self.pool_fetch_finished(job, !cancelled && errors.is_empty(), skipped);
                     if self.active_jobs.is_empty() {
                         self.batch = Batch::default();
                     }
@@ -824,22 +870,6 @@ impl App {
                         self.status += &format!(" · {} more job(s) to go", self.active_jobs.len());
                     }
                     let errors_empty = errors.is_empty();
-                    // Factory reads fail file by file: one line and one
-                    // popup per batch, not one per file.
-                    let (locked, mut errors): (Vec<_>, Vec<_>) = errors
-                        .into_iter()
-                        .partition(|e| e.ends_with(device::FACTORY_LOCKED));
-                    if !locked.is_empty() {
-                        errors.push(format!(
-                            "{} file(s) skipped: {}",
-                            locked.len(),
-                            device::FACTORY_LOCKED
-                        ));
-                        if !self.factory_warned {
-                            self.factory_warned = true;
-                            self.factory_popup = true;
-                        }
-                    }
                     if self.active_jobs.is_empty() {
                         self.factory_warned = false;
                     }

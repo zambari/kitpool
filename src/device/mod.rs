@@ -102,6 +102,9 @@ enum Cmd {
         job: u64,
         cancel: Arc<AtomicBool>,
         task: Task,
+        /// Someone is waiting on it (a sample clicked to play or open):
+        /// it goes ahead of every ordinary waiting job.
+        first: bool,
     },
     Elek(ElekCmd),
     /// Close the MIDI ports (the device was switched off).
@@ -138,7 +141,13 @@ impl Device {
     }
 
     pub fn run(&self, job: u64, cancel: Arc<AtomicBool>, task: Task) {
-        self.send(Cmd::Job { job, cancel, task });
+        self.send(Cmd::Job { job, cancel, task, first: false });
+    }
+
+    /// Like [`Self::run`], but ahead of the jobs already waiting (after the
+    /// running one, and after other jobs sent this way).
+    pub fn run_next(&self, job: u64, cancel: Arc<AtomicBool>, task: Task) {
+        self.send(Cmd::Job { job, cancel, task, first: true });
     }
 
     /// Project dump work (see [`elek`]): runs in turn with other jobs.

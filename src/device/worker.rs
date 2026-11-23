@@ -74,6 +74,19 @@ pub(super) fn jumps_queue(task: &Task, busy: &[PathBuf]) -> bool {
     }
 }
 
+/// Queue `cmd` behind what's waiting; a job someone is waiting on
+/// (`first`) goes ahead of every ordinary one, behind earlier such jobs.
+pub(super) fn park(later: &mut VecDeque<Cmd>, cmd: Cmd) {
+    let at = match cmd {
+        Cmd::Job { first: true, .. } => later
+            .iter()
+            .position(|c| !matches!(c, Cmd::Job { first: true, .. }))
+            .unwrap_or(later.len()),
+        _ => later.len(),
+    };
+    later.insert(at, cmd);
+}
+
 /// `p` with `from` (or anything under it) moved to `to`, if it is there.
 pub(super) fn moved(p: &Path, from: &Path, to: &Path) -> Option<PathBuf> {
     p.strip_prefix(from).ok().map(|rest| {
@@ -205,7 +218,7 @@ pub(super) fn serve_lists(
                 task: Task::Rename { .. },
                 ..
             } => held.push_back(job),
-            job => later.push_back(job),
+            job => park(later, job),
         }
     }
 }
@@ -260,6 +273,13 @@ pub(super) fn count_local(p: &Path) -> (usize, u64) {
 impl Worker {
     pub(super) fn run(mut self) {
         loop {
+            // Jobs sent while the last one ran may include one that goes
+            // ahead of the others already waiting.
+            if !self.later.is_empty() {
+                while let Ok(c) = self.rx.try_recv() {
+                    park(&mut self.later, c);
+                }
+            }
             let cmd = match self.later.pop_front() {
                 Some(c) => c,
                 None if self.conn.is_some() => {
@@ -287,7 +307,7 @@ impl Worker {
             }
             match cmd {
                 Cmd::List { path, generation } => self.list_now(path, generation),
-                Cmd::Job { job, cancel, task } => {
+                Cmd::Job { job, cancel, task, .. } => {
                     // Renames done before this job: its paths are already current.
                     self.redirects.clear();
                     self.busy = involved(&task);
@@ -347,6 +367,7 @@ impl Worker {
                 job,
                 cancel,
                 task: Task::Rename { from, to },
+                ..
             } = cmd
             else {
                 continue;
@@ -455,7 +476,7 @@ impl Worker {
                 Cmd::List { path, generation } => self.list_now(path, generation),
                 Cmd::Elek(cmd) if cmd.browsing() => self.elek(cmd),
                 // Quick enough to run between the current job's steps.
-                Cmd::Job { job, cancel, task } if jumps_queue(&task, &self.busy) => {
+                Cmd::Job { job, cancel, task, .. } if jumps_queue(&task, &self.busy) => {
                     let n = self.redirects.len();
                     self.job(job, &cancel, task);
                     // A rename redirected the parked jobs; these too.
@@ -470,7 +491,7 @@ impl Worker {
                     ..
                 } => self.held.push_back(job),
                 Cmd::Release => self.release(),
-                job => self.later.push_back(job),
+                job => park(&mut self.later, job),
             }
         }
         self.count_parked();
@@ -507,7 +528,7 @@ impl Worker {
             .later
             .iter()
             .filter_map(|c| match c {
-                Cmd::Job { job, cancel, task } if !self.counted.contains_key(job) => {
+                Cmd::Job { job, cancel, task, .. } if !self.counted.contains_key(job) => {
                     let (paths, local, bytes) = Self::count_sources(task)?;
                     Some((*job, cancel.clone(), paths, local, bytes))
                 }

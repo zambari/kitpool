@@ -193,20 +193,7 @@ pub(super) fn slot_menu(ui: &mut egui::Ui, st: &ElekState, row: &SlotRowInfo<'_>
     ui.separator();
     // Groups: this row's, or make one from the selection (or this row).
     if let Some(g) = st.group_at(slot) {
-        let name = &st.groups[g].name;
-        if ui.button(format!("Select group \"{name}\"")).clicked() {
-            acts.push(RowAct::SelectGroup(g));
-            ui.close();
-        }
-        if ui.button("Rename group…").clicked() {
-            acts.push(RowAct::RenameGroup(g));
-            ui.close();
-        }
-        super::slots::spread_button(ui, st, g, acts);
-        if ui.button("Dissolve group").on_hover_text("Forget the group; its samples stay where they are").clicked() {
-            acts.push(RowAct::DissolveGroup(g));
-            ui.close();
-        }
+        super::slots::group_menu(ui, st, g, acts);
     } else {
         let pick: Vec<usize> = if selected { st.sel.iter().copied().collect() } else { vec![slot] };
         let label = if pick.len() == 1 { "Make a group of this slot…".to_owned() } else { format!("Group {} slots…", pick.len()) };
@@ -229,37 +216,63 @@ pub(super) fn slot_menu(ui: &mut egui::Ui, st: &ElekState, row: &SlotRowInfo<'_>
     // Move the selection (or this row) into one of the groups. Each entry
     // says what would happen; a move that would split or overflow a group
     // is shown disabled, with the reason.
+    // Split by bank: groups in the clicked slot's bank, and every group in
+    // the other banks (headed by bank letter, in slot order).
     if !st.groups.is_empty() {
         let join_pick: Vec<usize> = if selected { st.sel.iter().copied().collect() } else { vec![slot] };
-        ui.separator();
-        ui.menu_button("Move to group", |ui| {
-            for g in 0..st.groups.len() {
-                let name = st.groups[g].name.as_str();
-                match st.plan_join(g, &join_pick) {
-                    Ok(plan) => {
-                        if ui.button(name).on_hover_text(plan.note).clicked() {
-                            acts.push(RowAct::JoinGroup(g, join_pick.clone()));
-                            ui.close();
-                        }
-                    }
-                    Err(why) => {
-                        ui.add_enabled(false, egui::Button::new(name)).on_disabled_hover_text(why);
+        let here = slot / BANK;
+        let spans = st.group_spans();
+        let mut by_slot: Vec<usize> = (0..st.groups.len()).collect();
+        by_slot.sort_by_key(|&g| spans[g].start);
+        let (mine, other): (Vec<usize>, Vec<usize>) = by_slot.into_iter().partition(|&g| spans[g].start / BANK == here);
+        let letter = |b: usize| (b'A' + b as u8) as char;
+        let entry = |ui: &mut egui::Ui, acts: &mut Vec<RowAct>, g: usize| {
+            let name = st.groups[g].name.as_str();
+            match st.plan_join_in_bank(g, &join_pick) {
+                Ok(plan) => {
+                    if ui.button(name).on_hover_text(plan.note).clicked() {
+                        acts.push(RowAct::JoinGroup(g, join_pick.clone()));
+                        ui.close();
                     }
                 }
+                Err(why) => {
+                    ui.add_enabled(false, egui::Button::new(name)).on_disabled_hover_text(why);
+                }
             }
-        });
-    }
-    let empty = st.empty_groups();
-    if empty > 0 {
-        let label = if empty == 1 { "Remove empty group".to_owned() } else { format!("Remove {empty} empty groups") };
-        if ui
-            .button(label)
-            .on_hover_text("Forget the groups that hold no samples. Slots don't move")
-            .clicked()
-        {
-            acts.push(RowAct::RemoveEmptyGroups);
-            ui.close();
+        };
+        ui.separator();
+        if mine.is_empty() {
+            ui.add_enabled(false, egui::Button::new("Move to group in this bank"))
+                .on_disabled_hover_text(format!("Bank {} has no groups", letter(here)));
+        } else {
+            ui.menu_button("Move to group in this bank", |ui| {
+                for &g in &mine {
+                    entry(ui, acts, g);
+                }
+            });
         }
+        if other.is_empty() {
+            ui.add_enabled(false, egui::Button::new("Move to group in other bank"))
+                .on_disabled_hover_text("No other bank has groups");
+        } else {
+            ui.menu_button("Move to group in other bank", |ui| {
+                let mut last = None;
+                for &g in &other {
+                    let b = spans[g].start / BANK;
+                    if last != Some(b) {
+                        if last.is_some() {
+                            ui.separator();
+                        }
+                        ui.label(egui::RichText::new(format!("Bank {}", letter(b))).weak().small());
+                        last = Some(b);
+                    }
+                    entry(ui, acts, g);
+                }
+            });
+        }
+    }
+    if st.group_at(slot).is_none() {
+        super::slots::remove_empty_button(ui, st, acts);
     }
     ui.separator();
     if !targets.is_empty() {

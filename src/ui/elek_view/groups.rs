@@ -37,8 +37,24 @@ pub(super) enum SlotDrop {
     Into { g: usize, before: Option<u16>, line: usize },
     /// All of group `g` lands at `top`, pushing down like `Shift`.
     Group { g: usize, top: usize },
+    /// ⌥ with a group: its second half lands at `top` as a new group of the
+    /// same name, the first half stays (`plan_split`).
+    Split { g: usize, top: usize },
     /// ⌥: the selection swaps in place.
     Place(usize),
+}
+
+/// How hard a group reorder (`ElekState::plan_reorder`) may shuffle its
+/// bank, gentlest first. Each level allows the ones before it.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub(super) enum Shuffle {
+    /// Only into free slots already there: nothing else moves.
+    Fit,
+    /// Push neighbours aside, each only as far as the next free slot.
+    Push,
+    /// Slide everything between the group and its new spot over by the
+    /// group's length. Always possible inside a bank.
+    Rotate,
 }
 
 /// A worked-out drop: the new order and groups, and what to say about it.
@@ -57,12 +73,25 @@ pub(super) fn positions(order: &[u16]) -> Vec<usize> {
     pos
 }
 
+/// The `group_hues` key for groups named `name`: names match ignoring case
+/// and surrounding spaces, as everywhere else groups compare names.
+pub fn hue_key(name: &str) -> String {
+    name.trim().to_lowercase()
+}
+
 fn bank_end(p: usize, n: usize) -> usize {
     ((p / BANK + 1) * BANK).min(n)
 }
 
 impl ElekState {
     /// Each group's slots now, by index.
+    /// The colour of groups named `name`: the device accent (`bright` when
+    /// hot) turned by its hue offset.
+    pub(super) fn group_color(&self, name: &str, bright: bool) -> egui::Color32 {
+        let base = if bright { theme::DEVICE_ACCENT_BRIGHT } else { theme::DEVICE_ACCENT };
+        theme::hue_shift(base, self.group_hues.get(&hue_key(name)).copied().unwrap_or(0.0))
+    }
+
     pub(super) fn group_spans(&self) -> Vec<Range<usize>> {
         let pos = positions(&self.order);
         self.groups.iter().map(|g| span_of(g, &pos)).collect()
@@ -119,10 +148,26 @@ impl ElekState {
         }
         let mut pick = pick.to_vec();
         pick.sort_unstable();
+        let (a, b) = (pick[0], pick[pick.len() - 1]);
+        let mut order = self.order.clone();
+        let members: Vec<u16> = if pick.iter().all(|&s| self.free(self.order[s])) {
+            // Only empty slots: a container, its places stay where they are.
+            pick.iter().map(|&s| self.order[s]).collect()
+        } else {
+            // A group with samples is always packed: its empty slots within
+            // the range move to just after it (other slots don't move).
+            let (filled, empty): (Vec<u16>, Vec<u16>) =
+                self.order[a..=b].iter().copied().partition(|&id| !self.free(id));
+            let mut run = filled.clone();
+            run.extend(empty);
+            order.splice(a..=b, run);
+            filled
+        };
+        let count = members.len();
         let mut groups = self.groups.clone();
-        groups.push(Group { name: name.clone(), members: pick.iter().map(|&s| self.order[s]).collect() });
-        self.commit(self.order.clone(), groups);
-        self.status = format!("Grouped {} slot(s) as \"{name}\"", pick.len());
+        groups.push(Group { name: name.clone(), members });
+        self.commit(order, groups);
+        self.status = format!("Grouped {count} slot(s) as \"{name}\"");
     }
 
     pub(super) fn rename_group(&mut self, g: usize, name: String) {
@@ -156,6 +201,44 @@ impl ElekState {
         self.status = format!("Removed {removed} empty group(s)");
     }
 
+    /// Why group `g` can't be compacted, or how many empty slots it would drop.
+    pub(super) fn compactable(&self, g: usize) -> Result<usize, &'static str> {
+        let gr = self.groups.get(g).ok_or("No such group")?;
+        if gr.members.len() < 2 {
+            return Err("The group is a single slot");
+        }
+        let empty = gr.members.iter().filter(|&&x| self.free(x)).count();
+        match empty {
+            0 => Err("The group has no empty slots"),
+            e if e == gr.members.len() => Ok(e - 1),
+            e => Ok(e),
+        }
+    }
+
+    /// Drops group `g`'s empty slots: its samples close up at its top (in
+    /// order) and the freed slots stay right after it, ungrouped. An all-empty
+    /// container shrinks to its first slot. Nothing outside the group moves.
+    pub(super) fn compact_group(&mut self, g: usize) {
+        if let Err(why) = self.compactable(g) {
+            self.status = why.into();
+            return;
+        }
+        let span = self.group_spans()[g].clone();
+        let gr = &self.groups[g];
+        let (filled, empty): (Vec<u16>, Vec<u16>) = self.order[span.clone()].iter().copied().partition(|&id| !self.free(id));
+        let members = if filled.is_empty() { vec![self.order[span.start]] } else { filled.clone() };
+        let dropped = gr.members.len() - members.len();
+        let name = gr.name.clone();
+        let mut order = self.order.clone();
+        let mut run = filled;
+        run.extend(empty);
+        order.splice(span, run);
+        let mut groups = self.groups.clone();
+        groups[g].members = members;
+        self.commit(order, groups);
+        self.status = format!("Compacted \"{name}\": dropped {dropped} empty slot(s)");
+    }
+
     /// Forgets group `g`; its samples stay where they are.
     pub(super) fn dissolve_group(&mut self, g: usize) {
         if g >= self.groups.len() {
@@ -171,6 +254,34 @@ impl ElekState {
         let Some(span) = self.group_spans().get(g).cloned() else { return };
         self.sel = span.clone().collect();
         self.cursor = Some(span.start);
+        self.group_held = Some(g);
+    }
+
+    /// Jumps to group `g` from pane `side`: the pane opens its bank and, when
+    /// the group isn't all in view, eases (via `align[side]`) to show it from
+    /// one row above its first slot. Its first slot flashes and the group is
+    /// selected. (Not `ping_scroll`: the jump row draws after the list, and
+    /// the pane clears that flag the same frame.)
+    pub(super) fn go_to_group(&mut self, g: usize, side: usize) {
+        let Some(span) = self.group_spans().get(g).cloned() else { return };
+        self.select_group(g);
+        self.active = side;
+        self.ping = Some((span.start, std::time::Instant::now()));
+        let bank = span.start / BANK;
+        let rows = BANK.min(self.order.len() - bank * BANK);
+        let (top, h) = (self.scroll[side], self.view_h[side]);
+        let (a, b) = ((span.start % BANK) as f32 * ROW_H, ((span.end - 1) % BANK + 1) as f32 * ROW_H);
+        if self.bank[side] != bank || a < top || b > top + h {
+            self.bank[side] = bank;
+            let max = (rows as f32 * ROW_H - h).max(0.0);
+            self.align[side] = Some((a - ROW_H).clamp(0.0, max));
+        }
+    }
+
+    /// True when the selection is exactly group `g`'s slots.
+    pub(super) fn group_selected(&self, g: usize) -> bool {
+        let Some(span) = self.group_spans().get(g).cloned() else { return false };
+        self.sel.len() == span.len() && span.clone().all(|s| self.sel.contains(&s))
     }
 
     /// For every bank without a group named like `g`: where a one-slot
@@ -240,11 +351,87 @@ impl ElekState {
         self.status = note;
     }
 
+    /// Moves group `g` toward where the same-named groups in the other banks
+    /// keep their samples: the mean slot offset (within the bank) over their
+    /// samples. `g` is placed so its middle lands on that mean, or on the
+    /// nearest spot its bank allows. Slots in its bank move out of the way as
+    /// for a group drop; a spot that would push anything into another bank is
+    /// skipped.
+    pub(super) fn plan_gather(&self, g: usize) -> Result<Plan, String> {
+        let Some(gr) = self.groups.get(g) else { return Err("No such group".into()) };
+        let spans = self.group_spans();
+        let span = spans[g].clone();
+        let n = self.order.len();
+        let own = span.start / BANK;
+        let want = gr.name.trim().to_lowercase();
+        let letter = |b: usize| (b'A' + b as u8) as char;
+        let (mut sum, mut count) = (0usize, 0usize);
+        let mut banks: Vec<char> = Vec::new();
+        for (h, other) in self.groups.iter().enumerate() {
+            let b = spans[h].start / BANK;
+            if h == g || b == own || other.name.trim().to_lowercase() != want {
+                continue;
+            }
+            // Samples count; a container with none counts by its empty slots.
+            let filled: Vec<usize> = spans[h].clone().filter(|&s| !self.free(self.order[s])).collect();
+            let slots: Vec<usize> = if filled.is_empty() { spans[h].clone().collect() } else { filled };
+            sum += slots.iter().map(|s| s % BANK).sum::<usize>();
+            count += slots.len();
+            banks.push(letter(b));
+        }
+        if count == 0 {
+            return Err(format!("No other bank has a \"{}\" group", gr.name));
+        }
+        let mean = sum as f32 / count as f32;
+        let len = span.len();
+        let base = own * BANK;
+        let bank_len = BANK.min(n - base);
+        if len > bank_len {
+            return Err("The group doesn't fit in its bank".into());
+        }
+        // Where the group's middle should be, as its first in-bank offset.
+        let ideal = mean - (len as f32 - 1.0) / 2.0;
+        let mut tops: Vec<usize> = (0..=bank_len - len).filter(|&t| base + t >= 1).collect();
+        tops.sort_by(|&a, &b| (a as f32 - ideal).abs().total_cmp(&(b as f32 - ideal).abs()));
+        let banks: String = banks.iter().map(char::to_string).collect::<Vec<_>>().join(", ");
+        for t in tops {
+            let top = base + t;
+            let Ok(p) = self.plan_picked(SlotDrop::Group { g, top }, None) else { continue };
+            if p.order.iter().zip(&self.order).enumerate().any(|(i, (new, old))| new != old && i / BANK != own) {
+                continue;
+            }
+            if p.order == self.order {
+                return Err(format!(
+                    "\"{}\" already sits as close to the mean slot {:03} of the other banks as its bank allows",
+                    gr.name,
+                    mean.round() as usize
+                ));
+            }
+            let mut note = format!(
+                "\"{}\" to {}–{}, nearest the mean slot {:03} of the \"{}\" groups in {banks}",
+                gr.name,
+                self.label(top),
+                self.label(top + len - 1),
+                mean.round() as usize,
+                gr.name
+            );
+            if !p.note.is_empty() {
+                note += &format!(" · {}", p.note);
+            }
+            return Ok(Plan { note, ..p });
+        }
+        Err(format!("No room in its bank to move \"{}\" toward slot {:03}", gr.name, mean.round() as usize))
+    }
+
     /// Group `g` was clicked by its frame in pane `side`: scroll the other
     /// pane so its group of the same name (in the bank it shows) sits level
     /// with this one. When the other pane can't scroll that far, this pane
     /// moves to meet it.
     pub(super) fn align_group(&mut self, g: usize, side: usize) {
+        if self.scroll_linked {
+            self.status = "The panes are scroll-linked: unlock the padlock between them to line groups up".into();
+            return;
+        }
         let spans = self.group_spans();
         let (Some(gr), Some(span)) = (self.groups.get(g), spans.get(g).cloned()) else { return };
         let name = gr.name.trim().to_lowercase();
@@ -289,7 +476,66 @@ impl ElekState {
 
     /// Works out a drop without doing it: `Err` says why it can't happen.
     pub(super) fn plan(&self, d: SlotDrop) -> Result<Plan, String> {
+        if let SlotDrop::Split { g, top } = d {
+            return self.plan_split(g, top);
+        }
+        if let SlotDrop::Group { g, top } = d {
+            if let Some(h) = self.same_name_in_bank(g, top / BANK) {
+                return self.plan_merge(g, h, top);
+            }
+        }
         self.plan_picked(d, None)
+    }
+
+    /// Another group named like `g` in bank `bank` (never `g` itself).
+    fn same_name_in_bank(&self, g: usize, bank: usize) -> Option<usize> {
+        let want = hue_key(&self.groups.get(g)?.name);
+        let spans = self.group_spans();
+        (0..self.groups.len()).find(|&i| i != g && spans[i].start / BANK == bank && hue_key(&self.groups[i].name) == want)
+    }
+
+    /// Group `g` dropped at `top` in a bank that already has its same-named
+    /// group `h`: `g`'s slots join `h` (before it when dropped at or above
+    /// its top, else at its end) and `g` ends. Two groups of one name never
+    /// share a bank.
+    fn plan_merge(&self, g: usize, h: usize, top: usize) -> Result<Plan, String> {
+        let spans = self.group_spans();
+        let pos = positions(&self.order);
+        let before = if top <= spans[h].start {
+            self.groups[h].members.iter().copied().min_by_key(|&x| pos[x as usize])
+        } else {
+            None
+        };
+        let picked: Vec<usize> = spans[g].clone().collect();
+        let p = self.plan_join_at(h, &picked, before)?;
+        let name = &self.groups[g].name;
+        let bank = (b'A' + (spans[h].start / BANK) as u8) as char;
+        let rest = p.note.replace(&format!(" · \"{name}\" ends (empty)"), "");
+        Ok(Plan { note: format!("Merge \"{name}\" into its namesake in bank {bank} · {rest}"), ..p })
+    }
+
+    /// ⌥-drop of group `g` at `top`: the group's second half moves to a new
+    /// group of the same name there, the first half stays. Refused when the
+    /// bank at `top` already has a group of that name. The new group is a
+    /// packed run, so the drop is planned like a `Shift` of those slots.
+    fn plan_split(&self, g: usize, top: usize) -> Result<Plan, String> {
+        let Some(gr) = self.groups.get(g) else { return Err("No such group".into()) };
+        let len = gr.members.len();
+        if len < 2 {
+            return Err(format!("\"{}\" has one slot: nothing to split", gr.name));
+        }
+        if let Some(why) = self.name_taken(&gr.name, top / BANK, None) {
+            return Err(why);
+        }
+        let pos = positions(&self.order);
+        let mut members = gr.members.clone();
+        members.sort_by_key(|&x| pos[x as usize]);
+        let moved = members.split_off(len - len / 2);
+        let picked: Vec<usize> = moved.iter().map(|&x| pos[x as usize]).collect();
+        let Plan { order, mut groups, note } = self.plan_picked(SlotDrop::Shift(top), Some(&picked))?;
+        groups.push(Group { name: gr.name.clone(), members: moved.clone() });
+        self.check_groups(&order, &groups)?;
+        Ok(Plan { order, groups, note: format!("Split \"{}\" · {note}", gr.name) })
     }
 
     /// Moves `pick` into group `g` at its end, as a drop there would (the
@@ -309,9 +555,308 @@ impl ElekState {
 
     /// Joins `pick` to group `g` (see `plan_join`) as one undo step.
     pub(super) fn join_group(&mut self, g: usize, pick: &[usize]) {
-        match self.plan_join(g, pick) {
+        match self.plan_join_in_bank(g, pick) {
             Ok(p) => {
                 self.commit(p.order, p.groups);
+                self.status = p.note;
+            }
+            Err(why) => self.status = why,
+        }
+    }
+
+    /// `plan_join`, refused when the shuffle would move a slot into a bank
+    /// other than the group's or the ones `pick` came from. Pushes that run
+    /// over the bank's edge are caught here, not left to the next bank.
+    pub(super) fn plan_join_in_bank(&self, g: usize, pick: &[usize]) -> Result<Plan, String> {
+        self.plan_join_at(g, pick, None)
+    }
+
+    /// `plan_join_in_bank`, landing before member `before` (`None`: at the end).
+    fn plan_join_at(&self, g: usize, pick: &[usize], before: Option<u16>) -> Result<Plan, String> {
+        let plan = match before {
+            None => self.plan_join(g, pick)?,
+            Some(_) => self.plan_picked(SlotDrop::Into { g, before, line: 0 }, Some(pick))?,
+        };
+        let Some(span) = self.group_spans().get(g).cloned() else { return Err("No such group".into()) };
+        let letter = |b: usize| (b'A' + b as u8) as char;
+        let mut allowed: HashSet<usize> = pick.iter().filter(|&&s| s < self.order.len()).map(|&s| s / BANK).collect();
+        allowed.insert(span.start / BANK);
+        let spilled = plan
+            .order
+            .iter()
+            .zip(&self.order)
+            .enumerate()
+            .filter(|(_, (new, old))| new != old)
+            .map(|(i, _)| i / BANK)
+            .find(|b| !allowed.contains(b));
+        match spilled {
+            Some(b) => Err(format!(
+                "That would spill into bank {} (the group is in {}); the group's bank has no room for it",
+                letter(b),
+                letter(span.start / BANK)
+            )),
+            None => Ok(plan),
+        }
+    }
+
+    /// Reorders group `g` within its bank so it sits at `at` among the bank's
+    /// *other* groups in slot order (0: before the first; their count: after
+    /// the last). Nothing leaves the bank. Every way allowed by `cap` is
+    /// worked out and the one that disturbs least wins (see `Shuffle`):
+    /// fewest other slots moved, then the shortest total distance they move,
+    /// then the shortest trip for `g` itself (so it crawls toward the target
+    /// and stops at the first good spot). Ties go to the gentler level.
+    pub(super) fn plan_reorder(&self, g: usize, at: usize, cap: Shuffle) -> Result<Plan, String> {
+        let Some(gr) = self.groups.get(g) else { return Err("No such group".into()) };
+        let spans = self.group_spans();
+        let span = spans[g].clone();
+        let len = span.len();
+        let n = self.order.len();
+        let bank = span.start / BANK;
+        let base = (bank * BANK).max(1);
+        let end = bank_end(span.start, n);
+        let mut others: Vec<usize> = (0..spans.len()).filter(|&h| h != g && spans[h].start / BANK == bank).collect();
+        others.sort_by_key(|&h| spans[h].start);
+        let at = at.min(others.len());
+        let a = at.checked_sub(1).map(|i| others[i]);
+        let b = others.get(at).copied();
+        let name = |h: usize| format!("\"{}\"", self.groups[h].name);
+        let place = match (a, b) {
+            (Some(a), Some(b)) => format!("between {} and {}", name(a), name(b)),
+            (Some(a), None) => format!("after {}", name(a)),
+            (None, Some(b)) => format!("before {}", name(b)),
+            (None, None) => return Err(format!("\"{}\" is the only group in its bank", gr.name)),
+        };
+        if others.iter().filter(|&&h| spans[h].start < span.start).count() == at {
+            return Err(format!("\"{}\" is already {place}", gr.name));
+        }
+        let lo = a.map_or(base, |a| spans[a].end);
+        let hi = b.map_or(end, |b| spans[b].start);
+        let before = positions(&self.order);
+        let mine: HashSet<u16> = gr.members.iter().copied().collect();
+        // The spacing the user keeps between groups in this bank: the
+        // smallest gap they left between two neighbouring groups (1 if they
+        // all touch). The moved group tries to keep that much on each side.
+        let bank_spans = |groups: &[Group], pos: &[usize]| -> Vec<Range<usize>> {
+            let mut v: Vec<Range<usize>> = groups
+                .iter()
+                .map(|h| span_of(h, pos))
+                .filter(|s| !s.is_empty() && s.start / BANK == bank)
+                .collect();
+            v.sort_by_key(|s| s.start);
+            v
+        };
+        let pad = {
+            let now = bank_spans(&self.groups, &before);
+            now.windows(2).map(|w| w[1].start.saturating_sub(w[0].end)).filter(|&d| d > 0).min().unwrap_or(1)
+        };
+        // Is the result in the wanted order, inside the bank, and how much
+        // did it disturb? `None`: not usable. Scored, lowest wins: groups
+        // left touching (gaps between groups are only given up when there's
+        // no room to keep them), slots moved, their distance, how far the
+        // moved group falls short of `pad` on its sides, its own trip.
+        let judge = |p: &Plan| -> Option<(usize, usize, usize, usize, usize)> {
+            if p.groups.len() != self.groups.len() {
+                return None;
+            }
+            if p.order.iter().zip(&self.order).enumerate().any(|(i, (x, y))| x != y && i / BANK != bank) {
+                return None;
+            }
+            let pos = positions(&p.order);
+            let new = |h: usize| span_of(&p.groups[h], &pos);
+            let gs = new(g);
+            if a.is_some_and(|a| new(a).end > gs.start) || b.is_some_and(|b| new(b).start < gs.end) {
+                return None;
+            }
+            let grouped: HashSet<u16> = self.groups.iter().flat_map(|g| g.members.iter().copied()).collect();
+            let (mut moved, mut dist) = (0, 0);
+            for (i, &id) in p.order.iter().enumerate() {
+                let was = before[id as usize];
+                if was != i && !mine.contains(&id) && (!self.free(id) || grouped.contains(&id)) {
+                    moved += 1;
+                    dist += was.abs_diff(i);
+                }
+            }
+            let touching = bank_spans(&p.groups, &pos).windows(2).filter(|w| w[1].start <= w[0].end).count();
+            let short = a.map_or(0, |a| pad.saturating_sub(gs.start.saturating_sub(new(a).end)))
+                + b.map_or(0, |b| pad.saturating_sub(new(b).start.saturating_sub(gs.end)));
+            Some((touching, moved, dist, short, gs.start.abs_diff(span.start)))
+        };
+        type Score = (usize, usize, usize, usize, usize);
+        let mut best: Option<(Score, Shuffle, Plan)> = None;
+        let mut offer = |score: Score, level: Shuffle, p: Plan| {
+            if level <= cap && best.as_ref().is_none_or(|(s, l, _)| (score, level) < (*s, *l)) {
+                best = Some((score, level, p));
+            }
+        };
+        // Fit / Push: lift the group out and drop it on each spot between
+        // its new neighbours, pushing aside as a group drop does.
+        let last = end.saturating_sub(len);
+        for top in lo.min(last)..=hi.min(last) {
+            let Ok(p) = self.plan_picked(SlotDrop::Group { g, top }, None) else { continue };
+            let Some(score) = judge(&p) else { continue };
+            let level = if score.1 == 0 { Shuffle::Fit } else { Shuffle::Push };
+            offer(score, level, p);
+        }
+        // Rotate: the slots between the group and its new neighbour slide
+        // over by its length, gaps and all; the group takes their place.
+        // Always fits, since the bank's slot count doesn't change.
+        if cap >= Shuffle::Rotate {
+            let mut order = self.order.clone();
+            if span.end <= lo {
+                order[span.start..lo].rotate_left(len);
+            } else {
+                order[hi..span.end].rotate_right(len);
+            }
+            let p = Plan { order, groups: self.groups.clone(), note: String::new() };
+            if self.check_groups(&p.order, &p.groups).is_ok() {
+                if let Some(score) = judge(&p) {
+                    offer(score, Shuffle::Rotate, p);
+                }
+            }
+        }
+        let Some(((_, moved, _, _, _), level, p)) = best else {
+            return Err(match cap {
+                Shuffle::Fit => format!("No free room {place} for \"{}\" ({len} slots); release ⇧ to push slots aside", gr.name),
+                _ => format!("Can't move \"{}\" {place} without leaving its bank", gr.name),
+            });
+        };
+        let land = span_of(&p.groups[g], &positions(&p.order)).start;
+        let how = match level {
+            Shuffle::Fit => "fits in free slots, nothing else moves".to_string(),
+            Shuffle::Push => format!("{moved} slot(s) pushed into free room"),
+            Shuffle::Rotate => format!("no free room: {moved} slot(s) slide over by {len}"),
+        };
+        let note = format!(
+            "Move \"{}\" {place}, to {}–{} · {how}",
+            gr.name,
+            self.label(land),
+            self.label(land + len - 1)
+        );
+        Ok(Plan { note, ..p })
+    }
+
+    /// Arrow keys on a selected group: slides it `step` slots (negative: up)
+    /// inside its bank; the slots it passes over, empty or not, go to its
+    /// other side. |step| > 1 means "up to": it stops short of a neighbour
+    /// group or the bank's edge. A one-slot step into a neighbour group
+    /// hops the whole neighbour. At the bank's edge it crosses into the next
+    /// bank (`plan_cross`).
+    pub(super) fn plan_step(&self, g: usize, step: i32) -> Result<Plan, String> {
+        let Some(gr) = self.groups.get(g) else { return Err("No such group".into()) };
+        let spans = self.group_spans();
+        let span = spans[g].clone();
+        let len = span.len();
+        let n = self.order.len();
+        let base = (span.start / BANK * BANK).max(1);
+        let end = bank_end(span.start, n);
+        let down = step > 0;
+        let room = if down { end - span.end } else { span.start - base };
+        if room == 0 {
+            return self.plan_cross(g, down);
+        }
+        let want = (step.unsigned_abs() as usize).min(room);
+        // The run slid over must not end inside another group.
+        let edge = |k: usize| if down { span.end + k } else { span.start - k };
+        let cut = spans.iter().enumerate().find(|&(h, r)| h != g && r.start < edge(want) && edge(want) < r.end).map(|(_, r)| r.clone());
+        let k = match cut {
+            None => want,
+            Some(r) => {
+                let (shrink, grow) = if down {
+                    (r.start - span.end, r.end - span.end)
+                } else {
+                    (span.start - r.end, span.start - r.start)
+                };
+                if shrink > 0 && step.abs() > 1 { shrink } else { grow }
+            }
+        };
+        let mut order = self.order.clone();
+        if down {
+            order[span.start..span.end + k].rotate_right(k);
+        } else {
+            order[span.start - k..span.end].rotate_left(k);
+        }
+        self.check_groups(&order, &self.groups)?;
+        let land = if down { span.start + k } else { span.start - k };
+        let passed = (if down { span.end..span.end + k } else { span.start - k..span.start })
+            .filter(|&s| !self.free(self.order[s]))
+            .count();
+        let mut note = format!("Move \"{}\" to {}–{}", gr.name, self.label(land), self.label(land + len - 1));
+        if passed > 0 {
+            note += &format!(" · {passed} slot(s) moved {}", if down { "up" } else { "down" });
+        }
+        Ok(Plan { order, groups: self.groups.clone(), note })
+    }
+
+    /// `plan_step` past the bank's edge: group `g` lands at the near end of
+    /// the next bank (top when going down, bottom when going up), that
+    /// bank's slots shifting away into its free slots nearest the edge
+    /// (loose empties, not group members). The empties it uses fill the
+    /// group's old place. Refused when the bank lacks room or already has
+    /// a group of that name.
+    fn plan_cross(&self, g: usize, down: bool) -> Result<Plan, String> {
+        let Some(gr) = self.groups.get(g) else { return Err("No such group".into()) };
+        let span = self.group_spans()[g].clone();
+        let len = span.len();
+        let n = self.order.len();
+        let bank = span.start / BANK;
+        let letter = |b: usize| (b'A' + b as u8) as char;
+        let tb = match (down, bank) {
+            (false, 0) => return Err(format!("\"{}\" is at the top of bank A", gr.name)),
+            (false, b) => b - 1,
+            (true, b) => b + 1,
+        };
+        let (tbase, tend) = ((tb * BANK).max(1), ((tb + 1) * BANK).min(n));
+        if tbase >= n {
+            return Err(format!("\"{}\" is at the end of the last bank", gr.name));
+        }
+        if let Some(why) = self.name_taken(&gr.name, tb, Some(g)) {
+            return Err(why);
+        }
+        let grouped: HashSet<u16> = self.groups.iter().flat_map(|g| g.members.iter().copied()).collect();
+        let mut cells: Vec<u16> = self.order[tbase..tend].to_vec();
+        let mut loose: Vec<usize> = (0..cells.len()).filter(|&i| self.free(cells[i]) && !grouped.contains(&cells[i])).collect();
+        if loose.len() < len {
+            return Err(format!("Bank {} has {} free slot(s); \"{}\" needs {len}", letter(tb), loose.len(), gr.name));
+        }
+        if down {
+            loose.truncate(len);
+        } else {
+            loose.drain(..loose.len() - len);
+        }
+        let pushed = if down { loose[len - 1] + 1 - len } else { cells.len() - loose[0] - len };
+        let empties: Vec<u16> = loose.iter().map(|&i| cells[i]).collect();
+        for &i in loose.iter().rev() {
+            cells.remove(i);
+        }
+        let members = self.order[span.clone()].to_vec();
+        let cells = if down { [members, cells].concat() } else { [cells, members].concat() };
+        let mut order = self.order.clone();
+        order[tbase..tend].copy_from_slice(&cells);
+        order[span.clone()].copy_from_slice(&empties);
+        self.check_groups(&order, &self.groups)?;
+        let land = if down { tbase } else { tend - len };
+        let mut note = format!("Move \"{}\" to bank {}, {}–{}", gr.name, letter(tb), self.label(land), self.label(land + len - 1));
+        let shifted = (if down { tbase + len..tbase + len + pushed } else { tend - len - pushed..tend - len })
+            .filter(|&s| !self.free(order[s]))
+            .count();
+        if shifted > 0 {
+            note += &format!(" · {shifted} slot(s) shifted {}", if down { "down" } else { "up" });
+        }
+        Ok(Plan { order, groups: self.groups.clone(), note })
+    }
+
+    /// Applies `plan_step` and keeps the group selected and in view.
+    pub(super) fn step_group(&mut self, g: usize, step: i32) {
+        match self.plan_step(g, step) {
+            Ok(p) => {
+                self.commit(p.order, p.groups);
+                self.select_group(g);
+                if let Some(span) = self.group_spans().get(g).cloned() {
+                    let lead = if step > 0 { span.end - 1 } else { span.start };
+                    self.cursor = Some(lead);
+                    self.reveal = Some(lead);
+                }
                 self.status = p.note;
             }
             Err(why) => self.status = why,
@@ -392,7 +937,7 @@ impl ElekState {
                     },
                 }
             }
-            SlotDrop::Place(_) => unreachable!(),
+            SlotDrop::Place(_) | SlotDrop::Split { .. } => unreachable!(),
         };
         // Put them in, pushing what's there down until enough empty slots
         // (including the ones just left) take up the shift. When there's no
@@ -570,9 +1115,17 @@ impl ElekState {
     pub(super) fn apply_drop(&mut self, d: SlotDrop) {
         match self.plan(d) {
             Ok(p) => {
+                // A merge drops `g`, so find it again by a member.
+                let held = match d {
+                    SlotDrop::Group { g, .. } => self.groups.get(g).and_then(|gr| gr.members.first().copied()),
+                    _ => None,
+                };
                 self.commit(p.order, p.groups);
-                if let SlotDrop::Group { g, .. } = d {
+                if let Some(g) = held.and_then(|id| self.groups.iter().position(|gr| gr.members.contains(&id))) {
                     self.select_group(g);
+                }
+                if let SlotDrop::Split { .. } = d {
+                    self.select_group(self.groups.len() - 1);
                 }
                 self.status = p.note;
             }

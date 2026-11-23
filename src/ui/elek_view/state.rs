@@ -120,8 +120,14 @@ impl ElekState {
         self.confirm_clear = None;
         self.fills.clear();
         self.filling.clear();
-        let banks = p.pool.len().div_ceil(BANK);
-        self.bank = [0, 1.min(banks - 1)];
+        // A re-read (push verification, reload) keeps each pane on its bank;
+        // only a fresh open starts at A / B.
+        let banks = p.pool.len().div_ceil(BANK).max(1);
+        if self.project.is_some() {
+            self.bank = self.bank.map(|b| b.min(banks - 1));
+        } else {
+            self.bank = [0, 1.min(banks - 1)];
+        }
         self.sel.clear();
         self.cursor = None;
         self.undo.clear();

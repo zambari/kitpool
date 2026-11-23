@@ -246,7 +246,7 @@ impl PresetView {
             .unwrap_or_else(|| self.base(loc))
     }
 
-    fn changed(&self) -> usize {
+    pub(crate) fn changed(&self) -> usize {
         self.edits()
             .iter()
             .filter(|(loc, src)| self.base(loc) != **src)

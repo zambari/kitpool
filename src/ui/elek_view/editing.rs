@@ -180,7 +180,8 @@ impl ElekState {
             .map(|(i, _)| i)
             .collect();
         self.cursor = cur.and_then(|c| self.order.iter().position(|&o| o == c));
-        self.reveal = self.cursor;
+        // No `reveal` here: an edit (a drop, a split) must never switch a
+        // pane's bank. Key-driven moves (nudge, paste, group step) set it.
         self.sync_saved_groups();
     }
 
@@ -232,6 +233,7 @@ impl ElekState {
             return;
         }
         self.edit(|order| slot_list::nudge(order, &sel, dir, 1));
+        self.reveal = self.cursor;
     }
 
     /// Puts `n` empty slots at `at`, pushing `at` and the samples below it

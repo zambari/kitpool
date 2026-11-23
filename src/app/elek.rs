@@ -43,6 +43,20 @@ pub(super) struct PoolFetch {
     import: Option<Import>,
 }
 
+impl PoolFetch {
+    /// `job` is a fetch in a queue of more than one request.
+    pub(super) fn is_queued_job(&self, job: u64) -> bool {
+        self.total > 1 && self.running.is_some_and(|(id, _)| id == job)
+    }
+
+    /// Files queued but not yet handed to the device, and their bytes.
+    /// The device only ever sees one fetch at a time, so the status bar
+    /// adds these to show the whole run and a real ETA.
+    pub(super) fn queued(&self) -> (usize, u64) {
+        (self.queue.len(), self.queue.iter().map(|k| k.1 as u64).sum())
+    }
+}
+
 /// A project or pattern being saved with its samples.
 pub(super) struct BundleSave {
     file: file::SaveFile,

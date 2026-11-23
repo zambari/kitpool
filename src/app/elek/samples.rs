@@ -149,7 +149,7 @@ impl App {
         self.pump_fetch();
     }
 
-    pub(super) fn stop_fetch(&mut self) {
+    pub(in crate::app) fn stop_fetch(&mut self) {
         let f = &mut self.pool_fetch;
         f.queue.clear();
         f.then = None;
@@ -185,7 +185,13 @@ impl App {
                 total_bytes: k.1 as u64,
                 local_names: Default::default(),
             };
-            let id = self.run_device(task, &format!("Fetching {short} for preview"), 1, k.1 as u64);
+            // A clicked slot goes ahead of other device work, too.
+            let label = format!("Fetching {short} for preview");
+            let id = if self.pool_fetch.then.is_some_and(|(w, _)| w == k) {
+                self.run_device_next(task, &label, 1, k.1 as u64)
+            } else {
+                self.run_device(task, &label, 1, k.1 as u64)
+            };
             self.pool_fetch.running = Some((id, k));
             break;
         }
@@ -201,7 +207,7 @@ impl App {
     /// A device job finished: if it was a preview fetch, play what was
     /// waiting on it and start the next. Called before the status bar
     /// forgets the queue, so a run of fetches shows as one batch.
-    pub(in crate::app) fn pool_fetch_finished(&mut self, job: u64, ok: bool) {
+    pub(in crate::app) fn pool_fetch_finished(&mut self, job: u64, ok: bool, skipped: bool) {
         if let Some(files) = self.pool_fetch.uploads.remove(&job) {
             for (slot, path) in files {
                 match self.links.local_link(&path).map(|l| (l.hash, l.size)) {
@@ -221,24 +227,34 @@ impl App {
             return;
         };
         self.pool_fetch.done += 1;
-        self.pool_fetch.fails = if ok { 0 } else { self.pool_fetch.fails + 1 };
-        if self.pool_fetch.fails == 1 {
-            // Likely moved on the device since the names were looked up.
+        if skipped {
+            // Factory content can't be copied off the device. In a queue
+            // that's a skip, not a failure: the rest still runs.
+            self.pool_fetch.fails = 0;
             if self.pool_fetch.then.is_some_and(|(w, _)| w == k) {
                 self.pool_fetch.then = None;
-                self.elek.status = "Couldn't fetch that one (moved on the device since the read?)".into();
+                self.elek.status = "Factory samples can't be copied off the device; skipped".into();
             }
-        } else if !ok {
-            // Unplugged or refused: don't run down the rest of the queue
-            // into the same wall.
-            let left = self.pool_fetch.queue.len();
-            self.pool_fetch.queue.clear();
-            self.pool_fetch.then = None;
-            if left > 0 {
-                self.elek.status = format!("Fetch failed; {left} queued fetch(es) dropped");
+        } else {
+            self.pool_fetch.fails = if ok { 0 } else { self.pool_fetch.fails + 1 };
+            if self.pool_fetch.fails == 1 {
+                // Likely moved on the device since the names were looked up.
+                if self.pool_fetch.then.is_some_and(|(w, _)| w == k) {
+                    self.pool_fetch.then = None;
+                    self.elek.status = "Couldn't fetch that one (moved on the device since the read?)".into();
+                }
+            } else if !ok {
+                // Unplugged or refused: don't run down the rest of the queue
+                // into the same wall.
+                let left = self.pool_fetch.queue.len();
+                self.pool_fetch.queue.clear();
+                self.pool_fetch.then = None;
+                if left > 0 {
+                    self.elek.status = format!("Fetch failed; {left} queued fetch(es) dropped");
+                }
+            } else if let Some((want, open)) = self.pool_fetch.then.take_if(|(w, _)| *w == k) {
+                self.elek_local(want, open);
             }
-        } else if let Some((want, open)) = self.pool_fetch.then.take_if(|(w, _)| *w == k) {
-            self.elek_local(want, open);
         }
         if self.pool_fetch.done % 10 == 0 {
             self.measure_cache();

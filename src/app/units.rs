@@ -162,6 +162,23 @@ impl App {
         }
     }
 
+    /// Units with Device-view edits not yet pushed (sample pool, patterns,
+    /// sound pool, presets), shown unit first: `(unit, changed count)`.
+    pub(super) fn unpushed_device_edits(&self) -> Vec<(String, usize)> {
+        let count = |e: &ElekState| e.changed() + e.presets.changed();
+        let shown = self.unit_name.clone().unwrap_or_else(|| "Device".to_owned());
+        let mut parked: Vec<(String, usize)> = self
+            .parked_units
+            .iter()
+            .map(|(u, c)| (u.clone(), count(&c.elek)))
+            .collect();
+        parked.sort();
+        std::iter::once((shown, count(&self.elek)))
+            .chain(parked)
+            .filter(|(_, n)| *n > 0)
+            .collect()
+    }
+
     /// Run `f` with `unit` (not the one shown) standing in as the active
     /// unit: its parked state swapped in and requests going to its worker.
     /// Status lines set meanwhile are marked with its name.

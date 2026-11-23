@@ -83,6 +83,18 @@ impl App {
             }
         }
 
+        if let Some(units) = &self.relaunch_ask {
+            if let Some(go) = dialogs::confirm_relaunch_unpushed(ctx, units) {
+                self.relaunch_ask = None;
+                if go {
+                    self.relaunch = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                } else {
+                    self.status = "Relaunch cancelled: device edits are still unpushed".to_owned();
+                }
+            }
+        }
+
         if self.factory_popup && dialogs::factory_locked(ctx) {
             self.factory_popup = false;
         }

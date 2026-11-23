@@ -108,6 +108,11 @@ impl App {
             last_unit: None,
             unit_name: None,
             pool_groups: saved.as_ref().map(|s| s.pool_groups.clone()).unwrap_or_default(),
+            // Keys are `hue_key`s; older saves kept the name as typed.
+            group_hues: saved
+                .as_ref()
+                .map(|s| s.group_hues.iter().map(|(k, &h)| (crate::ui::elek_view::hue_key(k), h)).collect())
+                .unwrap_or_default(),
             parked_units: Default::default(),
             background: false,
             drive_dirs: Default::default(),
@@ -181,6 +186,7 @@ impl App {
             device_origin: None,
             send_back: None,
             relaunch: false,
+            relaunch_ask: None,
             reset_state: false,
             panel_intro,
             elek_mode: false,
@@ -294,6 +300,7 @@ impl App {
             device_hides_files: self.elek.hide_files,
             device_open_banks: self.elek.proj.banks,
             pool_groups: self.pool_groups.clone(),
+            group_hues: self.group_hues.clone(),
         }
     }
 }

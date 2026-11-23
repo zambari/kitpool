@@ -377,8 +377,15 @@ impl App {
                     .on_hover_text("A newer build is on disk. Quit (asking about unsaved edits first) and start it.")
                     .on_disabled_hover_text("Wait for the transfer to finish");
                 if resp.clicked() {
-                    self.relaunch = true;
-                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                    let unpushed = self.unpushed_device_edits();
+                    if unpushed.is_empty() {
+                        self.relaunch = true;
+                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                    } else {
+                        // Device edits live only in this session: ask first
+                        // (`show_device_dialogs`).
+                        self.relaunch_ask = Some(unpushed);
+                    }
                 }
             }
 
@@ -412,7 +419,10 @@ impl App {
         }
         self.errors_logged = self.errors.len();
 
-        let waiting = self.active_jobs.len().saturating_sub(1);
+        // Preview fetches wait in the app's own queue, one device job at a
+        // time: count them here so the bar shows the whole run.
+        let (fetch_items, fetch_bytes) = self.pool_fetch.queued();
+        let waiting = self.active_jobs.len().saturating_sub(1) + fetch_items;
         // The ETA clock starts when the first job of the run starts moving.
         if self.batch.started_at.is_none() && self.active_jobs.iter().any(|j| j.started) {
             self.batch.started_at = Some(std::time::Instant::now());
@@ -429,11 +439,13 @@ impl App {
                     .active_jobs
                     .iter()
                     .map(|j| j.total_items)
-                    .sum::<usize>();
+                    .sum::<usize>()
+                + fetch_items;
             let done_bytes =
                 b.done_bytes + self.active_jobs.iter().map(|j| j.done_bytes).sum::<u64>();
-            let total_bytes =
-                b.total_bytes + self.active_jobs.iter().map(|j| j.total_bytes).sum::<u64>();
+            let total_bytes = b.total_bytes
+                + self.active_jobs.iter().map(|j| j.total_bytes).sum::<u64>()
+                + fetch_bytes;
             let bytes_known =
                 !b.bytes_unknown && self.active_jobs.iter().all(|j| j.total_bytes > 0);
             let frac = if bytes_known && total_bytes > 0 {
@@ -492,6 +504,9 @@ impl App {
             // Buttons pinned right; the bar takes the rest so long names fit.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if waiting > 0 && ui.button("Cancel all").clicked() {
+                    if fetch_items > 0 {
+                        self.stop_fetch();
+                    }
                     for j in &self.active_jobs {
                         self.jobs.cancel(j.id);
                     }

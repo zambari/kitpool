@@ -75,6 +75,17 @@ pub fn device_frame() -> Stroke {
 }
 
 /// Barely-there wash behind a +Drive pane.
+/// `c` turned round the colour wheel by `half_turns` (-1..1 is ±180°),
+/// keeping its saturation, brightness and alpha.
+pub fn hue_shift(c: Color32, half_turns: f32) -> Color32 {
+    if half_turns == 0.0 {
+        return c;
+    }
+    let mut hsva = egui::ecolor::Hsva::from(c);
+    hsva.h = (hsva.h + half_turns / 2.0).rem_euclid(1.0);
+    hsva.into()
+}
+
 pub fn device_wash() -> Color32 {
     DEVICE_ACCENT.gamma_multiply(0.05)
 }

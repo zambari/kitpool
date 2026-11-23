@@ -15,6 +15,7 @@ mod chrome;
 mod dialogs;
 mod editing;
 mod groups;
+pub use groups::hue_key;
 mod keys;
 mod slot_menu;
 mod slots;
@@ -97,8 +98,15 @@ pub struct ElekState {
     groups_from: Vec<usize>,
     pub groups_unit: Option<String>,
     pub groups_dirty: bool,
+    /// Group colours by name (hue offset, half turns), shared by all units
+    /// through the app; `hues_dirty` hands an edit back.
+    pub group_hues: std::collections::BTreeMap<String, f32>,
+    pub hues_dirty: bool,
     /// The slot drag is a whole group's (by its name or frame).
     group_drag: Option<usize>,
+    /// The group last selected as a whole (tab, frame, jump button, a group
+    /// move): while the selection is still exactly it, arrow keys move it.
+    group_held: Option<usize>,
     /// Naming a group: `(group to rename, or None for a new one from these
     /// slots, name typed so far, focus the field next frame)`.
     group_naming: Option<(Option<usize>, Vec<usize>, String, bool)>,
@@ -112,6 +120,11 @@ pub struct ElekState {
     view_h: [f32; 2],
     /// Scroll offset a pane eases to next frame (group alignment).
     align: [Option<f32>; 2],
+    /// Padlock between the two panes: scrolling one scrolls the other to
+    /// the same offset. `follow[side]` is the offset that pane jumps to on
+    /// its next draw (set by the other pane moving).
+    scroll_linked: bool,
+    follow: [Option<f32>; 2],
     reveal: Option<usize>,
     /// A slot (position now) flashed to point it out without selecting it.
     ping: Option<(usize, std::time::Instant)>,
@@ -301,11 +314,17 @@ enum RowAct {
     NewGroup(Vec<usize>),
     RenameGroup(usize),
     DissolveGroup(usize),
+    /// Drop the group's empty slots; its samples close up.
+    CompactGroup(usize),
+    /// Hue offset for every group of this name (0 forgets it).
+    GroupHue(String, f32),
     SelectGroup(usize),
     /// Line the other pane up on its group of the same name.
     AlignGroup(usize),
     /// Make an empty group like this one in every bank without one.
     SpreadGroup(usize),
+    /// Move this group toward the mean slot of its same-named groups elsewhere.
+    GatherGroup(usize),
     /// Move these slots into group `g` at its end ("Move to group").
     JoinGroup(usize, Vec<usize>),
     /// Forget every group that holds no samples.

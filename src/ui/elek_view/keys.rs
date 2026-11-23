@@ -8,6 +8,9 @@ impl ElekState {
             return;
         }
         let n = self.order.len();
+        if self.group_held.is_some_and(|g| !self.group_selected(g)) {
+            self.group_held = None;
+        }
         let (m, up, down, pgup, pgdn, esc, z, a, space) = ctx.input(|i| {
             (
                 i.modifiers,
@@ -50,8 +53,12 @@ impl ElekState {
                 self.want_local = Some((k, false));
             }
         }
-        if m.command && z && !self.edit_locked() {
-            self.undo();
+        if m.command && z {
+            if self.edit_locked() {
+                self.status = "Undo waits: the device is busy".into();
+            } else {
+                self.undo();
+            }
         }
         if m.command && a {
             let b = self.bank[self.active] * BANK;
@@ -73,6 +80,19 @@ impl ElekState {
         };
         if step == 0 {
             return;
+        }
+        // A whole group selected: arrows move it (⇧ / PgUp / PgDn: up to a
+        // page), across banks at the edges.
+        if !m.alt && !m.command {
+            if let Some(g) = self.group_held {
+                if self.edit_locked() {
+                    self.status = "Wait a moment: the device is busy, and an edit now would be lost".into();
+                } else {
+                    let page = m.shift || pgup || pgdn;
+                    self.step_group(g, if page { step.signum() * 16 } else { step.signum() });
+                }
+                return;
+            }
         }
         if m.alt && (up || down) {
             if !self.edit_locked() {

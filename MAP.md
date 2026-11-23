@@ -32,12 +32,17 @@ control→function tables are in [MAP_full.md](MAP_full.md) (not maintained).
 - **Device queue**: one thread per unit (`Worker::run`, `src/device/worker.rs`;
   `Device` routes to the active unit's). Writes
   keep their order; read-only browser requests may jump ahead between steps
-  (`jumps_queue`). Renaming a folder that queued jobs use rewrites their paths
+  (`jumps_queue`). A sample clicked to play or open goes ahead of waiting
+  jobs, not the running one (`App::run_device_next`, `Cmd::Job`'s `first`,
+  `worker::park`). Renaming a folder that queued jobs use rewrites their paths
   (`redirect_queue`, `Worker::redirects`). Retries, timeouts and chunk size are
   consts in `src/device/mod.rs`.
 - Project reads go through the same queue, re-prioritized every frame by the
   page in view (`App::prioritize_elek_read`, `ReadFirst`). Patterns are read last
   because they're slow.
+- Preview fetches (`PoolFetch`) hand the device one file at a time, so the
+  status bar (`App::status_bar`) adds the still-queued ones (`PoolFetch::queued`)
+  to its file/byte totals and ETA; "Cancel all" also stops that queue.
 
 ## Vocabulary
 
@@ -111,8 +116,11 @@ control→function tables are in [MAP_full.md](MAP_full.md) (not maintained).
   egui when the clipboard holds text.
 - A kit never saves over or renames a file its slices came from
   (`Editor::path_is_source`).
-- Factory samples can't be copied; the device refuses, surfaced once per run of
-  queued jobs (`device::FACTORY_LOCKED`).
+- Factory samples can't be copied; the device refuses (`device::FACTORY_LOCKED`).
+  A lone request shows the popup; inside a fetch queue (`pool_fetch.total > 1`)
+  the file is skipped silently and doesn't count toward the queue's failure
+  streak (`App::pool_fetch_finished`'s `skipped`). Other transfers surface it
+  once per batch.
 - `Panels::default()` is the resting editor layout, but a first run starts on
   `Panels::all_on()` and the intro (`app/intro.rs`, after the first sample
   loads) switches off its way to the default. Change both together.
@@ -136,12 +144,65 @@ control→function tables are in [MAP_full.md](MAP_full.md) (not maintained).
   (MIDI port name) by +Drive hash in `AppState::pool_groups`, synced by
   `App::sync_pool_groups`; a project gets a group back when those samples
   sit packed in one bank. Empty members save as key `(0, 0)` plus the start slot (`PoolGroup::at`).
+  The group right-click menu is `slots::group_menu`, shown on the name tab
+  and, inline, on any of the group's rows (`slot_menu`), so both offer the same actions.
+  "Compact group" is `compactable` / `compact_group`: the samples close up at
+  the top, the empty slots fall out just below (an all-empty container keeps one).
   "Add empty … to other banks" is `spread_targets` / `spread_group`.
-  Right-click ▸ "Move to group" is `plan_join` (the end-of-group drop with an
-  explicit pick list, not the selection), listed per group in `slot_menu.rs`.
+  "Move toward … in other banks" (group right-click) is `plan_gather`: the
+  mean in-bank slot of the same-named groups elsewhere, then the nearest
+  legal spot for the group (pushes like a group drop, refused if it spills).
+  Arrow keys move a group *held* as a whole (`ElekState::group_held`, set by
+  `select_group`: tab, frame, jump button, a group move; cleared once the
+  selection stops matching), in `keys.rs` → `step_group` / `plan_step`:
+  ↑/↓ one slot, ⇧ or PgUp/PgDn up to 16 (stops short of a neighbour group
+  or the bank edge). Passed-over slots rotate to the other side; a one-slot
+  step into a neighbour group hops it whole. At a bank edge the next press
+  crosses banks (`plan_cross`): lands at the near end of the next bank,
+  using that bank's nearest loose empties, refused if short of room or the
+  name is taken there.
+  A group dropped into a bank that already has its same-named group merges
+  into it (`plan_merge` via `plan_join_at`: before it if dropped at/above its
+  top, else at its end), refused like a join if it would spill banks.
+  ⌥ while dropping a dragged group splits it (`SlotDrop::Split`, `plan_split`):
+  the second half becomes a new group of the same name at the drop spot,
+  refused if that bank already has one. The landing band previews the half, and the source group shades
+  that half while ⌥ is held (`group_frames`).
+  A 1px minimap line per group sits in a strip between the rows and the
+  scrollbar (`group_minimap`, `MINIMAP_W`), scaled to the whole bank.
+  Each pane has a jump row under its list (`group_nav_row`, only when its bank
+  has groups): a button per group in that bank → `ElekState::go_to_group`
+  (selects it, flashes its first slot and eases the pane to it through `align[side]` when it isn't all in view; not `ping_scroll`, which the pane clears before the row draws). Slot drops on a button
+  join the group via `plan_join_in_bank` (the join menu uses it too), refused
+  when the shuffle would push a slot into a bank other than the group's or
+  the picked slots' own. Buttons are in slot order and drag like a group
+  tab. A group dropped *between* buttons reorders within its bank via
+  `plan_reorder(g, at, cap)`: `Shuffle` is the aggression cap (`Fit`: only
+  free room, nothing else moves; `Push`: shove neighbours to the next free
+  slot, like a group drop; `Rotate`: slide everything between over by the
+  group's length, always fits). It tries every landing spot between the new
+  neighbours plus the rotation and keeps the least disturbing (fewest groups
+  left touching, so gaps between groups only go when there's no room; then
+  fewest other slots moved, their total distance, how far the group falls
+  short of the bank's smallest existing gap on each side, its own trip). ⇧
+  while dropping caps it at `Fit`.
+  Group colour is per *name*, app-wide (all units, banks, projects): a hue
+  offset -1..1 (±180° from device yellow) in `AppState::group_hues`, keyed
+  by `hue_key` (trimmed, lowercase, like every group name comparison), set by
+  the slider at the bottom of the group menus (`hue_slider`), painted via
+  `ElekState::group_color` / `theme::hue_shift`. `elek` is per unit, so
+  `App::sync_pool_groups` copies the map in and takes edits back (`hues_dirty`).
+  Right-click ▸ "Move to group in this bank" / "…in other bank" is `plan_join`
+  (the end-of-group drop with an explicit pick list, not the selection),
+  checked via `plan_join_in_bank`, listed per group in `slot_menu.rs` (the
+  other-bank list is headed by bank letter).
   Clicking a frame side lines the other pane up on
   its same-named group (`ElekState::align_group`, eased via `align[side]`
-  through `ping_scroll`). Presets also map filtered rows
+  through `ping_scroll`; refused while the panes are scroll-linked).
+  The padlock at the top between the two Samples panes
+  (`scroll_link_toggle`, `ElekState::scroll_linked`) links their scrolling:
+  a pane that moved hands its offset to the other via `follow[side]`, which
+  jumps there next draw and doesn't pass the move back. Presets also map filtered rows
   through `RowHit::slot_of` and warn about locked slots.
 - Device status and copy/paste feedback goes to the bottom status bar, not to
   banners above lists.

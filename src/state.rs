@@ -85,6 +85,10 @@ pub struct AppState {
     /// Sample groups per unit (MIDI port name).
     #[serde(default)]
     pub pool_groups: std::collections::BTreeMap<String, Vec<PoolGroup>>,
+    /// Sample group colour by group name, all units: hue offset in half
+    /// turns (-1..1) from the device yellow. Missing = no offset.
+    #[serde(default)]
+    pub group_hues: std::collections::BTreeMap<String, f32>,
 }
 
 fn default_open_banks() -> [bool; 8] {
