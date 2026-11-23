@@ -113,6 +113,7 @@ impl App {
                 .as_ref()
                 .map(|s| s.group_hues.iter().map(|(k, &h)| (crate::ui::elek_view::hue_key(k), h)).collect())
                 .unwrap_or_default(),
+            preset_groups: saved.as_ref().map(|s| s.preset_groups.clone()).unwrap_or_default(),
             parked_units: Default::default(),
             background: false,
             drive_dirs: Default::default(),
@@ -301,6 +302,7 @@ impl App {
             device_open_banks: self.elek.proj.banks,
             pool_groups: self.pool_groups.clone(),
             group_hues: self.group_hues.clone(),
+            preset_groups: self.preset_groups.clone(),
         }
     }
 }

@@ -89,6 +89,9 @@ pub struct AppState {
     /// turns (-1..1) from the device yellow. Missing = no offset.
     #[serde(default)]
     pub group_hues: std::collections::BTreeMap<String, f32>,
+    /// Preset groups per unit (MIDI port name).
+    #[serde(default)]
+    pub preset_groups: std::collections::BTreeMap<String, Vec<PresetGroup>>,
 }
 
 fn default_open_banks() -> [bool; 8] {
@@ -101,6 +104,16 @@ fn default_kit_grid() -> Option<usize> {
 
 fn default_focus() -> Role {
     Role::Source
+}
+
+/// A preset group (see `ui::elek_presets_view::groups`): slots `at..at +
+/// len` (0-based) of +Drive preset bank `bank`.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+pub struct PresetGroup {
+    pub name: String,
+    pub bank: String,
+    pub at: u16,
+    pub len: u16,
 }
 
 /// A sample group (see `ui::elek_view::groups`), by the +Drive hashes of

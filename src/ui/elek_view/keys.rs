@@ -1,6 +1,7 @@
 //! Sample-pool keyboard navigation, playback and clipboard dispatch.
 
 use super::*;
+use groups::GroupHost;
 
 impl ElekState {
     pub(super) fn keys(&mut self, ctx: &egui::Context) {

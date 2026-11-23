@@ -130,7 +130,7 @@ pub(crate) fn device_pages(ui: &mut egui::Ui, active: Option<ElekPage>, drive: b
     theme::device_tab_strip(
         ui,
         &[
-            (DevicePick::Page(ElekPage::Order), "Samples", "The sample pool in two side-by-side panes"),
+            (DevicePick::Page(ElekPage::Order), "RAM", "The sample pool in two side-by-side panes"),
             (DevicePick::Page(ElekPage::Project), "Patterns", "Experimental: move, copy, clear and rename patterns (Digitakt II support is newer and less tested)"),
             (DevicePick::Page(ElekPage::Presets), "Presets", "Saved +Drive presets in two bank browsers"),
             (DevicePick::Page(ElekPage::Library), "Pool", "The project's 128 pool sounds: rearrange, rename or delete them"),

@@ -425,6 +425,8 @@ pub struct App {
     /// Group colours by name (`AppState::group_hues`), shared by all
     /// units; copied into whichever `elek` is shown.
     group_hues: std::collections::BTreeMap<String, f32>,
+    /// Preset groups per unit, like `pool_groups`.
+    preset_groups: std::collections::BTreeMap<String, Vec<state::PresetGroup>>,
     parked_units: std::collections::HashMap<String, units::UnitCtx>,
     /// Applying a parked unit's events: leave the shown tabs alone.
     background: bool,
@@ -449,8 +451,8 @@ impl App {
         }
     }
 
-    /// Hands the shown unit's saved sample groups to the pool view, and
-    /// takes them back for saving when they change.
+    /// Hands the shown unit's saved sample and preset groups to the device
+    /// views, and takes them back for saving when they change.
     fn sync_pool_groups(&mut self) {
         let unit = self.unit_name.clone().unwrap_or_default();
         if self.elek.groups_unit.as_ref() != Some(&unit) {
@@ -461,7 +463,18 @@ impl App {
             if self.elek.saved_groups.is_empty() {
                 self.pool_groups.remove(&unit);
             } else {
-                self.pool_groups.insert(unit, self.elek.saved_groups.clone());
+                self.pool_groups.insert(unit.clone(), self.elek.saved_groups.clone());
+            }
+        }
+        let presets = &mut self.elek.presets;
+        if presets.groups_unit.as_ref() != Some(&unit) {
+            presets.set_saved_groups(unit.clone(), self.preset_groups.get(&unit).cloned().unwrap_or_default());
+        }
+        if std::mem::take(&mut presets.groups_dirty) {
+            if presets.saved_groups.is_empty() {
+                self.preset_groups.remove(&unit);
+            } else {
+                self.preset_groups.insert(unit, presets.saved_groups.clone());
             }
         }
         // Hues are app-wide but `elek` is per unit: take edits back, and

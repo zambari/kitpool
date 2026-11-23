@@ -269,14 +269,19 @@ beside its name; hover for the complete list when it does not fit. Tags load
 in the background for the displayed banks, with visible rows first. They follow
 the sound through staged moves, swaps and pastes. Both lists use the full pane height.
 Use **click / ⇧click / ⌘click** to select slots, then drag the group within a
-bank or between panes. Normal drops place the group in consecutive slots,
-swapping occupied targets back into the freed slots. Hold **⌥** or **⌃** to
-insert above or below a row and shift the intervening slots. Hover a bank tab
+bank or between panes. Normal drops insert the selection there and shift
+the slots in between. Hold **⌥** or **⌃** to swap in place instead (occupied
+targets go back into the freed slots). Hover a bank tab
 while dragging to open that bank. **⌥↑ / ⌥↓** nudges the selection; **⌘A**
 selects the active bank, **Esc** deselects, and **⌘Z** undoes a whole group edit.
 Right-click to clear the selection, move it here, insert empty slots or close
 an empty gap (empty-slot insertion and gap closing stay within that bank).
 Cross-bank inserts read any affected intermediate banks before staging.
+**Groups** work as on the RAM page (frames, dragging a group as one, joining,
+splitting, merging, compacting, spreading to other banks, arrow keys on a
+selected group, the jump row and minimap, per-name colours), except that a
+plain drop inserts. Preset groups are kept per unit by bank and slot; while
+edits are staged, the saved layout stays the one on the device until you push.
 Copy a sound with **⌘C** or right-click → **Copy sound**, then select a slot
 on **Sounds** or **Presets**, or a sound row in **Patterns → SOUNDS**, and use
 **⌘V** or right-click → **Paste**. Pattern sound rows also support **⌘C** and

@@ -109,7 +109,7 @@ pub struct ElekState {
     group_held: Option<usize>,
     /// Naming a group: `(group to rename, or None for a new one from these
     /// slots, name typed so far, focus the field next frame)`.
-    group_naming: Option<(Option<usize>, Vec<usize>, String, bool)>,
+    group_naming: Option<crate::ui::slot_groups::Naming>,
     /// New +Drive files put into slots that were empty, by slot as read.
     pub fills: HashMap<u16, PoolEntry>,
     /// Slots (as read) waiting for a dropped file to upload and be found
@@ -306,29 +306,9 @@ enum RowAct {
     Click(usize, egui::Modifiers),
     /// `(slot, how far down the row it was grabbed)`.
     DragStart(usize, f32),
-    /// A group grabbed by its name or frame: `(group, slot grabbed, how far
-    /// down that row)`.
-    GroupDragStart(usize, usize, f32),
     Drop(groups::SlotDrop),
-    /// Make a group of these slots (asks for its name).
-    NewGroup(Vec<usize>),
-    RenameGroup(usize),
-    DissolveGroup(usize),
-    /// Drop the group's empty slots; its samples close up.
-    CompactGroup(usize),
-    /// Hue offset for every group of this name (0 forgets it).
-    GroupHue(String, f32),
-    SelectGroup(usize),
-    /// Line the other pane up on its group of the same name.
-    AlignGroup(usize),
-    /// Make an empty group like this one in every bank without one.
-    SpreadGroup(usize),
-    /// Move this group toward the mean slot of its same-named groups elsewhere.
-    GatherGroup(usize),
-    /// Move these slots into group `g` at its end ("Move to group").
-    JoinGroup(usize, Vec<usize>),
-    /// Forget every group that holds no samples.
-    RemoveEmptyGroups,
+    /// A group control (frame, tab, jump row, menu).
+    Group(groups::GroupAct),
     /// `(slot, how many)`.
     InsertEmpty(usize, usize),
     CloseGap(usize),

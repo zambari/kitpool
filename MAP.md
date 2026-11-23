@@ -52,7 +52,7 @@ control→function tables are in [MAP_full.md](MAP_full.md) (not maintained).
 | **+Drive**, drive (device context) | The sampler's file storage over SysEx. Plain absolute `PathBuf`s that never touch local disk; `DirTab::device == true`. | `device/conn.rs`, `transfer.rs` |
 | **drives** (local) | Mounted volumes, `💾 ⏷` menu. | `fs_model::volumes` |
 | **Device view**, Elek | Project in the device's memory, shown instead of the editor. | `app/elek.rs`, `ui/elek_view.rs` |
-| Samples page | Sample pool slots, 128 per bank. | `ElekPage::Order` |
+| RAM page (was "Samples") | Sample pool slots, 128 per bank. | `ElekPage::Order` |
 | Patterns page | 128 patterns, 16 per bank A–H. | `ElekPage::Project`, `device/elek/patterns.rs` |
 | Presets page | Saved sounds on +Drive, `/soundbanks/<bank>/<slot>`. Not part of the project. | `ElekPage::Presets` |
 | Pool page | The project's 128 **sound pool** sounds (not the sample pool). Formerly "Sounds". | `ElekPage::Library`, `ui/elek_library_view.rs` |
@@ -131,9 +131,25 @@ control→function tables are in [MAP_full.md](MAP_full.md) (not maintained).
   insert (`DropTarget::Shift`, `shift_place`): what's under the block moves
   down only as far as the next empty slots, falling back to a full insert
   when there's no room. Presets default to insert (they're copies, order is
-  free). ⌥/⌃ swaps in place in both. The sample list doesn't use the
-  shared target for the drop itself: it builds a `SlotDrop` in
-  `slot_landing` and works it out with `ElekState::plan`, which knows groups.
+  free). ⌥/⌃ swaps in place in both. Neither list uses the shared target
+  for the drop itself: both build a `SlotDrop` in `slot_groups::ui::landing`
+  and work it out with `Slots::plan`, which knows groups.
+- **Slot groups** are one engine for the RAM and Presets pages
+  (`ui/slot_groups.rs`: `Slots` plans over a page's `order`, `GroupHost` is
+  how a page applies a `Plan`; `slot_groups/ui.rs` draws frames, minimap,
+  jump row, menus and `landing`). Everything below about sample groups holds
+  for presets too, except: presets have no slot 0 (`first: 0`), a plain drop
+  inserts (`Slots::insert`), slots in unread banks count as filled, and
+  members are slot numbers *as shown* (staged edits included), renumbered
+  by every staged edit (`groups::renumber`). A preset group edit goes
+  through the same `Reorder` staging as any preset move (`commit_plan` →
+  `apply_pending` → `stage_with`, one undo step with the groups). Saved per
+  unit by bank + slot in `AppState::preset_groups` (`PresetView::base_groups`:
+  the layout as of the device, so unpushed moves don't move the save).
+  Presets hand hue edits back through `PresetView::hue_edits` (applied to
+  `ElekState::group_hues` at the end of `elek_presets_view::show`).
+  The page-specific halves: `ui/elek_view/groups.rs` (samples, by +Drive
+  hash) and `ui/elek_presets_view/groups.rs`.
 - **Sample groups** (`ui/elek_view/groups.rs`) exist only in this app:
   named runs of adjacent slots in one bank (empty ones allowed: a
   *container*, filled first by drops into it), always packed, moving as one
@@ -144,8 +160,13 @@ control→function tables are in [MAP_full.md](MAP_full.md) (not maintained).
   (MIDI port name) by +Drive hash in `AppState::pool_groups`, synced by
   `App::sync_pool_groups`; a project gets a group back when those samples
   sit packed in one bank. Empty members save as key `(0, 0)` plus the start slot (`PoolGroup::at`).
-  The group right-click menu is `slots::group_menu`, shown on the name tab
-  and, inline, on any of the group's rows (`slot_menu`), so both offer the same actions.
+  The group right-click menu is `slot_groups::ui::menu`, shown on the name tab
+  and, inline, on any of the group's rows (`slot_groups::ui::slot_menu`), so both offer the same actions;
+  both also get "Move to group in this/other bank" (`move_menus`: the tab moves all the group's slots).
+  A group whose slots are all selected gets a solid frame instead of dashed (`frames`).
+  "Group N slots…" (`Slots::new_group`) takes any ungrouped picks in one bank, gaps allowed, and is born
+  compact: the picked samples pack into the run that moves them least using only picked or loose empty
+  slots (empties left behind, nothing else moves); with no such run it lands like a drop at the first pick.
   "Compact group" is `compactable` / `compact_group`: the samples close up at
   the top, the empty slots fall out just below (an all-empty container keeps one).
   "Add empty … to other banks" is `spread_targets` / `spread_group`.
@@ -169,8 +190,8 @@ control→function tables are in [MAP_full.md](MAP_full.md) (not maintained).
   refused if that bank already has one. The landing band previews the half, and the source group shades
   that half while ⌥ is held (`group_frames`).
   A 1px minimap line per group sits in a strip between the rows and the
-  scrollbar (`group_minimap`, `MINIMAP_W`), scaled to the whole bank.
-  Each pane has a jump row under its list (`group_nav_row`, only when its bank
+  scrollbar (`ui::minimap`, `MINIMAP_W`), scaled to the whole bank.
+  Each pane has a jump row under its list (`ui::nav_row`, only when its bank
   has groups): a button per group in that bank → `ElekState::go_to_group`
   (selects it, flashes its first slot and eases the pane to it through `align[side]` when it isn't all in view; not `ping_scroll`, which the pane clears before the row draws). Slot drops on a button
   join the group via `plan_join_in_bank` (the join menu uses it too), refused
@@ -190,11 +211,11 @@ control→function tables are in [MAP_full.md](MAP_full.md) (not maintained).
   offset -1..1 (±180° from device yellow) in `AppState::group_hues`, keyed
   by `hue_key` (trimmed, lowercase, like every group name comparison), set by
   the slider at the bottom of the group menus (`hue_slider`), painted via
-  `ElekState::group_color` / `theme::hue_shift`. `elek` is per unit, so
+  `slot_groups::group_color` / `theme::hue_shift`. `elek` is per unit, so
   `App::sync_pool_groups` copies the map in and takes edits back (`hues_dirty`).
   Right-click ▸ "Move to group in this bank" / "…in other bank" is `plan_join`
   (the end-of-group drop with an explicit pick list, not the selection),
-  checked via `plan_join_in_bank`, listed per group in `slot_menu.rs` (the
+  checked via `plan_join_in_bank`, listed per group in `ui::slot_menu` (the
   other-bank list is headed by bank letter).
   Clicking a frame side lines the other pane up on
   its same-named group (`ElekState::align_group`, eased via `align[side]`

@@ -1,15 +1,20 @@
 //! The editable Presets page: two independent +Drive bank browsers,
 //! sound copy/paste with the current sound pool.
-//! Selection and ordering use slot_list, shared with the Samples page;
-//! permutations become grouped native preset moves/swaps only after bank reads.
+//! Selection and ordering use slot_list, and slot groups use slot_groups,
+//! both shared with the RAM page (see `groups.rs`); permutations become
+//! native preset moves/swaps only after bank reads.
 
 use crate::device::presets::{Preset, PresetEntry, PresetOp, PresetPush, PresetSlot, tag_names};
 use crate::ui::elek_view::{self, ElekIntent, ElekState};
 use crate::ui::slot_list::{self, DropTarget};
 use crate::ui::sound_tags;
 use crate::ui::theme::{self, OLED, OLED_BG, OLED_DIM, OLED_HOVER, oled_font};
+use crate::ui::slot_groups::{self as sgroups, ui as sg_ui, Group, GroupHost};
 use egui::{RichText, Sense, Stroke};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+
+mod groups;
+use groups::{Align, BANK};
 
 type Read<T> = Option<Result<T, String>>;
 
@@ -31,7 +36,8 @@ pub struct PresetView {
     grab: slot_list::Grab,
     active: usize,
     reveal: Option<usize>,
-    undo: Vec<usize>,
+    /// Per edit: the op count and groups before it.
+    undo: Vec<(usize, Vec<Group>)>,
     pending: Option<Reorder>,
     filter: String,
     hide_empty: bool,
@@ -54,6 +60,39 @@ pub struct PresetView {
     confirm_push: bool,
     /// Copy waiting for its preset; the key is a full re-read it waits on.
     copy_pending: Option<(PresetSlot, PresetSource, Option<(String, u32)>)>,
+    /// Preset groups shown, members numbered across banks as shown now
+    /// (see `groups.rs`); `base_groups` as of the device (no edits staged).
+    groups: Vec<Group>,
+    base_groups: Vec<Group>,
+    /// The bank list `groups` were matched on.
+    groups_banks: Vec<String>,
+    /// This unit's saved groups, handed back to the app when `groups_dirty`.
+    pub saved_groups: Vec<groups::PresetGroup>,
+    pub groups_unit: Option<String>,
+    pub groups_dirty: bool,
+    /// Empty slots now, and the identity order, for the group planner.
+    slot_free: Vec<bool>,
+    ident: Vec<u16>,
+    /// The drag under way is this whole group's.
+    group_drag: Option<usize>,
+    /// The group last selected as a whole: while the selection is still
+    /// exactly it, arrow keys move it.
+    group_held: Option<usize>,
+    group_naming: Option<sgroups::Naming>,
+    /// Hue edits from the group menus, for the page to hand to `ElekState`.
+    hue_edits: Vec<(String, f32)>,
+    /// Requests made while applying a group edit (bank reads).
+    want: Vec<ElekIntent>,
+    /// Per pane: scroll offset and view height last frame, the slots shown
+    /// (numbered across banks), and where to scroll next.
+    scroll: [f32; 2],
+    view_h: [f32; 2],
+    visible: [Vec<usize>; 2],
+    align: [Option<Align>; 2],
+    /// Row pitch last drawn.
+    pitch: f32,
+    /// A slot flashed to point it out.
+    ping: Option<(usize, std::time::Instant)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -72,6 +111,14 @@ struct Reorder {
     cursor: Option<usize>,
     clear: Option<Vec<usize>>,
     side: usize,
+    /// Groups after the edit (numbered as after it); `None`: unchanged.
+    groups: Option<Vec<Group>>,
+    /// Status once it's staged.
+    note: Option<String>,
+    /// Group to select once staged, and (`Some(down)`) put the cursor on
+    /// its leading edge.
+    select: Option<usize>,
+    lead: Option<bool>,
 }
 
 #[derive(Clone, Copy)]
@@ -139,6 +186,8 @@ impl PresetView {
         self.ops.clear();
         self.live_after_push = false;
         self.undo.clear();
+        self.reset_groups();
+        self.groups_banks.clear();
         self.pending = None;
         self.copy_pending = None;
         self.rename = None;
@@ -342,19 +391,30 @@ impl PresetView {
     }
 
     fn stage(&mut self, ops: Vec<PresetOp>) {
-        if ops.is_empty() {
+        self.stage_with(ops, None);
+    }
+
+    /// Stages `ops` and (when given) the groups after them, as one undo step.
+    fn stage_with(&mut self, ops: Vec<PresetOp>, groups: Option<Vec<Group>>) {
+        let regroup = groups.as_ref().is_some_and(|g| *g != self.groups);
+        if ops.is_empty() && !regroup {
             return;
         }
         // Live needs no preset data for moves, swaps or clears; a manual push
         // reads what it checks through `request_push_data`.
-        self.undo.push(self.ops.len());
+        self.undo.push((self.ops.len(), self.groups.clone()));
         self.ops.extend(ops);
+        if let Some(g) = groups {
+            self.groups = g;
+        }
         self.edited_at = Some(std::time::Instant::now());
-        if self.changed() == 0 {
+        if self.changed() == 0 && !self.ops.is_empty() {
             self.ops.clear();
             self.undo.clear();
         }
         self.status.clear();
+        self.refresh_slots();
+        self.groups_changed();
     }
 
     fn edit_tags(&mut self, loc: PresetSlot, tags: u32) {
@@ -375,10 +435,21 @@ impl PresetView {
     }
 
     fn undo(&mut self) {
-        if let Some(len) = self.undo.pop() {
+        if let Some((len, groups)) = self.undo.pop() {
             self.ops.truncate(len);
+            self.groups = groups;
             self.edited_at = Some(std::time::Instant::now());
+            self.refresh_slots();
+            self.groups_changed();
         }
+    }
+
+    /// Drops every staged edit, groups back as of the device.
+    fn reset(&mut self) {
+        self.ops.clear();
+        self.undo.clear();
+        self.reset_groups();
+        self.refresh_slots();
     }
 
     fn select(&mut self, banks: &[String], side: usize, index: usize, modifiers: egui::Modifiers) {
@@ -402,6 +473,10 @@ impl PresetView {
                 cursor: self.cursor,
                 clear: Some(pick),
                 side: self.active,
+                groups: None,
+                note: None,
+                select: None,
+                lead: None,
             });
             self.apply_pending(out);
             return;
@@ -416,6 +491,13 @@ impl PresetView {
             Edit::Drop(DropTarget::Insert(at)) => slot_list::insert(&mut order, &sel, at, 0),
             Edit::Nudge(dir) => slot_list::nudge(&mut order, &sel, dir, 0),
             Edit::InsertEmpty(at, n) => {
+                let s = self.slots();
+                let inside = s.group_at(at).filter(|&g| s.group_spans()[g].start != at).map(|g| s.groups[g].name.clone());
+                drop(s);
+                if let Some(name) = inside {
+                    self.status = format!("Groups stay packed: insert above or below \"{name}\"");
+                    return;
+                }
                 let start = at / 256 * 256;
                 let (made, _) =
                     slot_list::insert_empty(&mut order[start..start + 256], at - start, n, |i| {
@@ -437,6 +519,7 @@ impl PresetView {
         if order.iter().enumerate().all(|(i, old)| i == *old) {
             return;
         }
+        let groups = Some(self.groups_after(&order));
         self.pending = Some(Reorder {
             banks: banks.to_vec(),
             order,
@@ -444,6 +527,10 @@ impl PresetView {
             cursor: self.cursor,
             clear: None,
             side: self.active,
+            groups,
+            note: None,
+            select: None,
+            lead: None,
         });
         self.apply_pending(out);
     }
@@ -545,12 +632,28 @@ impl PresetView {
             .cursor
             .and_then(|c| edit.order.iter().position(|old| *old == c));
         self.active = edit.side;
-        if let Some(c) = self.cursor {
+        let moved = edit.order.iter().enumerate().any(|(i, old)| i != *old);
+        if let Some(c) = self.cursor.filter(|_| moved && edit.select.is_none()) {
             self.bank[self.active] = edit.banks[c / 256].clone();
             self.selected[self.active] = Some((c % 256 + 1) as u32);
             self.reveal = Some(c);
         }
-        self.stage(ops);
+        self.stage_with(ops, edit.groups);
+        if let Some(g) = edit.select {
+            self.select_group(g);
+            let span = self.slots().group_spans().get(g).cloned();
+            if let (Some(down), Some(span)) = (edit.lead, span) {
+                let at = if down { span.end - 1 } else { span.start };
+                self.cursor = Some(at);
+                self.reveal = Some(at);
+                if let Some(b) = edit.banks.get(at / BANK) {
+                    self.bank[self.active] = b.clone();
+                }
+            }
+        }
+        if let Some(note) = edit.note {
+            self.status = note;
+        }
     }
 
     fn keys(
@@ -589,6 +692,9 @@ impl PresetView {
                 i.key_pressed(egui::Key::Escape),
             )
         });
+        if self.group_held.is_some_and(|g| !self.slots().group_selected(g)) {
+            self.group_held = None;
+        }
         if esc {
             self.sel.clear();
         }
@@ -616,6 +722,18 @@ impl PresetView {
         };
         if step == 0 {
             return;
+        }
+        // A whole group selected: arrows move it (⇧ / PgUp / PgDn: up to a
+        // page), across banks at the edges.
+        if !m.alt && !m.command {
+            if let Some(g) = self.group_held {
+                if can_edit {
+                    let page = m.shift || pgup || pgdn;
+                    self.step_group(g, if page { step.signum() as i32 * 16 } else { step.signum() as i32 });
+                    out.append(&mut self.want);
+                }
+                return;
+            }
         }
         if m.alt && (up || down) {
             if can_edit {
@@ -718,6 +836,8 @@ impl PresetView {
         }
         self.ops.clear();
         self.undo.clear();
+        self.refresh_slots();
+        self.groups_changed();
     }
 
     /// A manual push compares every touched slot with the device first, so
@@ -904,6 +1024,25 @@ impl Default for PresetView {
             confirm_reload: false,
             confirm_push: false,
             copy_pending: None,
+            groups: Vec::new(),
+            base_groups: Vec::new(),
+            groups_banks: Vec::new(),
+            saved_groups: Vec::new(),
+            groups_unit: None,
+            groups_dirty: false,
+            slot_free: Vec::new(),
+            ident: Vec::new(),
+            group_drag: None,
+            group_held: None,
+            group_naming: None,
+            hue_edits: Vec::new(),
+            want: Vec::new(),
+            scroll: [0.0; 2],
+            view_h: [0.0; 2],
+            visible: [Vec::new(), Vec::new()],
+            align: [None, None],
+            pitch: 20.0,
+            ping: None,
         }
     }
 }
@@ -911,6 +1050,7 @@ impl Default for PresetView {
 pub fn show(ui: &mut egui::Ui, st: &mut ElekState) -> Vec<ElekIntent> {
     let mut out = Vec::new();
     elek_view::mode_header(ui, st, &mut out);
+    st.presets.refresh_slots();
     let present = crate::device::presence().available();
     if present && !st.presets.asked {
         st.presets.asked = true;
@@ -994,13 +1134,12 @@ pub fn show(ui: &mut egui::Ui, st: &mut ElekState) -> Vec<ElekIntent> {
                 }
             }
         });
-        if ui.add_enabled(can_edit && !st.presets.ops.is_empty(), egui::Button::new("Undo"))
+        if ui.add_enabled(can_edit && !st.presets.undo.is_empty(), egui::Button::new("Undo"))
             .on_hover_text("Undo the last edit that has not yet been sent to the device").clicked() {
             st.presets.undo();
         }
         if ui.add_enabled(can_edit && changed > 0, egui::Button::new("Reset")).clicked() {
-            st.presets.ops.clear();
-            st.presets.undo.clear();
+            st.presets.reset();
         }
         if changed > 0 {
             ui.colored_label(theme::CHANGED, format!("{changed} changed slot(s) · {}", if st.presets.live { "queued" } else { "not pushed" }));
@@ -1158,6 +1297,23 @@ pub fn show(ui: &mut egui::Ui, st: &mut ElekState) -> Vec<ElekIntent> {
         });
         st.presets.rename = if close { None } else { Some((loc, name)) };
     }
+    let mut naming = st.presets.group_naming.take();
+    sgroups::finish_naming(
+        ui.ctx(),
+        &mut naming,
+        "Only this app knows groups; they're kept for this unit by bank and slot.",
+        &mut st.presets,
+    );
+    st.presets.group_naming = naming;
+    for (key, h) in std::mem::take(&mut st.presets.hue_edits) {
+        if h == 0.0 {
+            st.group_hues.remove(&key);
+        } else {
+            st.group_hues.insert(key, h);
+        }
+        st.hues_dirty = true;
+    }
+    out.append(&mut st.presets.want);
     elek_view::finish(ui, st, &mut out);
     if present {
         st.presets.request_tags(tag_reads, &mut out);
@@ -1345,12 +1501,18 @@ fn pane(
     tag_reads: &mut [Vec<PresetSource>; 2],
     out: &mut Vec<ElekIntent>,
 ) {
+    // A drag ends with the release (handled the frame it happens).
+    let any_drag = egui::DragAndDrop::has_payload_of_type::<PresetDrag>(ui.ctx());
+    if !any_drag {
+        st.presets.group_drag = None;
+    }
     if bank_strip(ui, &mut st.presets.bank[side], banks) {
         st.presets.selected[side] = None;
         st.presets.active = side;
     }
     let bank = st.presets.bank[side].clone();
-    let start = banks.iter().position(|b| *b == bank).unwrap_or(0) * 256;
+    let bidx = banks.iter().position(|b| *b == bank).unwrap_or(0);
+    let start = bidx * BANK;
     if present && st.presets.pushing.is_none() && !st.presets.listings.contains_key(&bank) {
         st.presets.listings.insert(bank.clone(), None);
         out.push(ElekIntent::ListPresets(bank.clone()));
@@ -1414,7 +1576,19 @@ fn pane(
     let row_sources: Vec<_> = rows.iter()
         .map(|(slot, _, _, _, _)| origin_at(&PresetSlot::new(&bank, *slot)))
         .collect();
-    let height = ui.available_height();
+    // Rows sit `pitch` apart; the spacing between them belongs to the row
+    // above, so a drag over a gap still has a target.
+    let pitch = 20.0 + ui.spacing().item_spacing.y;
+    st.presets.pitch = pitch;
+    st.presets.visible[side] = rows.iter().map(|x| start + x.0 as usize - 1).collect();
+    // The row a slot sits at (hidden rows take none).
+    let row_of = |s: usize| rows.partition_point(|x| start + (x.0 as usize) - 1 < s);
+    let spans = st.presets.slots().group_spans();
+    let bank_groups = sg_ui::bank_groups(&st.presets.group_view(&st.group_hues, any_drag, pitch), bidx);
+    let nav_h = if bank_groups.is_empty() { 0.0 } else { sg_ui::NAV_H };
+    let height = (ui.available_height() - nav_h).max(pitch * 2.0);
+    let mut gacts: Vec<sgroups::GroupAct> = Vec::new();
+    let mut group_drop = None;
     let mut select = None;
     let mut edit = None;
     let mut copy = None;
@@ -1442,16 +1616,35 @@ fn pane(
             .auto_shrink([false, false]);
         if let Some(row) = reveal_row {
             scroll = scroll.vertical_scroll_offset(
-                (row as f32 * (20.0 + ui.spacing().item_spacing.y) - height * 0.5).max(0.0),
+                (row as f32 * pitch - height * 0.5).max(0.0),
             );
             st.presets.reveal = None;
         }
-        scroll.show_rows(ui, 20.0, rows.len(), |ui, range| {
-            // Rows sit `pitch` apart; the spacing between them belongs to
-            // the row above, so a drag over a gap still has a target.
-            let pitch = 20.0 + ui.spacing().item_spacing.y;
-            let dragging = can_edit && egui::DragAndDrop::has_payload_of_type::<PresetDrag>(ui.ctx());
+        // A group jump or line-up: ease there.
+        let motion_id = ui.scope_id().with(("preset_align", side, &bank));
+        let (top, view_h) = (st.presets.scroll[side], st.presets.view_h[side].max(pitch));
+        let max = (rows.len() as f32 * pitch - view_h).max(0.0);
+        let target = st.presets.align[side].take().and_then(|a| match a {
+            Align::Show(span) => {
+                let (a, b) = (row_of(span.start) as f32 * pitch, row_of(span.end) as f32 * pitch);
+                (a < top || b > top + view_h).then(|| (a - pitch).clamp(0.0, max))
+            }
+            Align::Level(s, y) => Some((row_of(s) as f32 * pitch - y).clamp(0.0, max)),
+        });
+        if let Some(y) = crate::ui::file_table::ping_scroll(ui, motion_id, top, target) {
+            scroll = scroll.vertical_scroll_offset(y);
+        }
+        // Room on the right for the group minimap, clear of the (floating)
+        // scrollbar.
+        let bar = {
+            let sc = &ui.spacing().scroll;
+            if sc.floating { sc.bar_width + sc.bar_outer_margin } else { 0.0 }
+        };
+        let shown = scroll.show_rows(ui, 20.0, rows.len(), |ui, range| {
+            ui.set_max_width((ui.available_width() - bar - sg_ui::MINIMAP_W).max(0.0));
+            let dragging = can_edit && any_drag;
             let mut hover = None;
+            let mut top_row = None;
             for row in range {
                 let (slot, name, filled, changed, tags) = &rows[row];
                 if let Some(src) = &row_sources[row] {
@@ -1462,6 +1655,8 @@ fn pane(
                     egui::vec2(ui.available_width(), 20.0),
                     Sense::hover(),
                 );
+                top_row.get_or_insert((row, r));
+                let grouped = spans.iter().any(|g| g.contains(&index));
                 let tags_width = if *filled { sound_tags::WIDTH.min(r.width() * 0.5) } else { 0.0 };
                 let tags_rect = egui::Rect::from_min_max(
                     egui::pos2(r.right() - tags_width - 6.0, r.top()),
@@ -1482,10 +1677,15 @@ fn pane(
                         },
                     );
                 }
+                if let Some((_, at)) = st.presets.ping.filter(|&(p, _)| p == index) {
+                    crate::ui::file_table::paint_ping(ui, r, at, theme::DEVICE_ACCENT_BRIGHT);
+                }
+                // Rows inside a group are smaller and darker.
                 let color = if *changed { theme::CHANGED } else if *filled { OLED } else { OLED_DIM };
+                let color = if grouped && !selected { color.gamma_multiply(0.75) } else { color };
                 let mut text = egui::text::LayoutJob::simple_singleline(
                     format!("{bank}:{slot:03}  {name}{}", if *changed { " *" } else { "" }),
-                    oled_font(16.0), color,
+                    oled_font(if grouped { 14.0 } else { 16.0 }), color,
                 );
                 text.wrap = egui::text::TextWrapping::truncate_at_width((grip.width() - 6.0).max(0.0));
                 let galley = ui.painter().layout_job(text);
@@ -1617,45 +1817,94 @@ fn pane(
                             }
                         }
                     });
+                    ui.separator();
+                    let gv = st.presets.group_view(&st.group_hues, any_drag, pitch);
+                    sg_ui::slot_menu(ui, &gv, index, selected, &mut gacts);
                 });
             }
+            if let Some((row0, r0)) = top_row {
+                let y = |s: usize| r0.top() + (row_of(s) as f32 - row0 as f32) * pitch;
+                let tab_right = r0.right() - sound_tags::WIDTH.min(r0.width() * 0.5) - 6.0;
+                let gv = st.presets.group_view(&st.group_hues, any_drag, pitch);
+                sg_ui::frames(ui, &gv, start..start + BANK, r0.x_range(), tab_right, &y, &|r| r.dnd_set_drag_payload(PresetDrag), &mut gacts);
+            }
             if let Some((row, r)) = hover {
-                let slot_of = |i: usize| rows.get(i).map_or(start + 256, |x| start + x.0 as usize - 1);
-                let row_of = |s: usize| rows.partition_point(|x| start + (x.0 as usize) - 1 < s);
-                let rules = slot_list::DropRules { first: 0, len: banks.len() * 256, plain: slot_list::PlainDrop::Insert };
-                let sel = &st.presets.sel;
-                let n = sel.len().max(1);
+                let slot_of = |i: usize| rows.get(i).map_or(start + BANK, |x| start + x.0 as usize - 1);
+                // Planned like the RAM page's drops (groups move as one, a drop
+                // never splits one), but a plain drop inserts: presets are
+                // copies, order is free.
+                let rules = slot_list::DropRules { first: 0, len: banks.len() * BANK, plain: slot_list::PlainDrop::Shift };
                 let hit = slot_list::RowHit { rect: r, pitch, row, slot_of: &slot_of };
-                let target = slot_list::drop_target_rows(ui, &hit, n, st.presets.grab, &rules);
+                let gv = st.presets.group_view(&st.group_hues, true, pitch);
+                let l = sg_ui::landing(ui, &gv, &hit, &rules);
                 // Locked presets anywhere the drop changes make the push fail.
-                let order = slot_list::preview(rules.len, &sel.iter().copied().collect::<Vec<_>>(), target, 0, |_| false);
-                let locked = order.iter().enumerate()
-                    .filter(|(i, old)| i != *old && st.presets.locked(&location(banks, *i), full_ops))
-                    .count();
-                let mut note = slot_list::landing_note(target, sel, &rules,
-                    |i| { let l = location(banks, i); format!("{}:{:03}", l.bank, l.slot) },
-                    |i| { let l = location(banks, i); edits.get(&l).cloned().unwrap_or_else(|| st.presets.base(&l)).is_some() });
+                let locked = l.order.as_ref().map_or(0, |order| {
+                    order.iter().enumerate()
+                        .filter(|(i, old)| *i != **old as usize && st.presets.locked(&location(banks, *i), full_ops))
+                        .count()
+                });
+                let mut note = l.note;
                 if locked > 0 {
-                    note = format!("{} locked on the device: the push will be refused\n{note}", locked);
+                    note = format!("{locked} locked on the device: the push will be refused\n{note}");
                 }
                 // Hidden rows (filter, hide empty) are skipped: the area covers
                 // the visible rows the landing slots fall on.
-                let span = slot_list::landing_span(target, n);
+                let span = slot_list::landing_span(l.target, l.n);
                 let y = |s: usize| r.top() + (row_of(s) as f32 - row as f32) * pitch;
                 let x = r.x_range();
-                slot_list::paint_landing(ui, x, egui::Rangef::new(y(span.start), y(span.end).max(y(span.start) + 3.0)), target, locked > 0);
-                theme::pointer_note(ui.ctx(), &note, if locked > 0 { theme::DENY } else { theme::DEVICE_ACCENT });
+                let ys = egui::Rangef::new(y(span.start), y(span.end).max(y(span.start) + 3.0));
+                let deny = l.deny || locked > 0;
+                if l.into_group {
+                    let c = if deny { theme::DENY } else { theme::DEVICE_ACCENT_BRIGHT };
+                    ui.painter().rect_filled(egui::Rect::from_x_y_ranges(x, ys), 0.0, c.gamma_multiply(0.10));
+                } else {
+                    slot_list::paint_landing(ui, x, ys, l.target, deny);
+                }
+                theme::pointer_note(ui.ctx(), &note, if deny { theme::DENY } else { theme::DEVICE_ACCENT });
+                drop(gv);
                 if ui.input(|i| i.pointer.any_released()) {
                     egui::DragAndDrop::clear_payload(ui.ctx());
                     st.presets.active = side;
-                    edit = Some(Edit::Drop(target));
+                    group_drop = Some(l.drop);
                 }
             }
             if dragging {
                 slot_list::drag_autoscroll(ui, pitch * 1.5);
             }
         });
+        let gv = st.presets.group_view(&st.group_hues, any_drag, pitch);
+        sg_ui::minimap(ui, &gv, start..start + BANK, shown.inner_rect, bar);
+        drop(gv);
+        st.presets.scroll[side] = shown.state.clamped_offset().y;
+        st.presets.view_h[side] = shown.inner_rect.height();
     });
+    if nav_h > 0.0 {
+        let gv = st.presets.group_view(&st.group_hues, any_drag, pitch);
+        gacts.extend(sg_ui::nav_row(
+            ui,
+            &gv,
+            ("presets", side),
+            &bank_groups,
+            &|r| r.dnd_hover_payload::<PresetDrag>().is_some(),
+            &|r| r.dnd_set_drag_payload(PresetDrag),
+        ));
+    }
+    if st.presets.ping.is_some_and(|(_, at)| at.elapsed().as_secs_f32() >= crate::ui::file_table::PING_SECS) {
+        st.presets.ping = None;
+    }
+    if let Some(d) = group_drop {
+        if can_edit {
+            st.presets.apply_drop(d);
+        }
+    }
+    for a in gacts {
+        if a.edits() && !can_edit {
+            st.presets.status = "Wait a moment: preset edits are on hold while the device is busy".into();
+            continue;
+        }
+        st.presets.group_act(a, side);
+    }
+    out.append(&mut st.presets.want);
     if let Some((loc, name)) = rename {
         if let Some(src) = st.presets.origin(&loc) {
             st.presets.request_sound(&src, out);
@@ -1677,6 +1926,18 @@ fn pane(
         st.presets.edit(banks, action, out);
     }
     if let Some((index, modifiers)) = select {
-        st.presets.select(banks, side, index, modifiers);
+        // A plain click inside a group first selects the whole group; the
+        // next plain click picks one of its rows.
+        let plain = !modifiers.shift && !modifiers.command;
+        let s = st.presets.slots();
+        let group = s.group_at(index).filter(|&g| plain && !s.group_selected(g));
+        drop(s);
+        match group {
+            Some(g) => {
+                st.presets.active = side;
+                st.presets.select_group(g);
+            }
+            None => st.presets.select(banks, side, index, modifiers),
+        }
     }
 }

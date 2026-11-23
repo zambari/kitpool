@@ -8,6 +8,7 @@ pub mod elek_view;
 pub mod file_table;
 pub mod infobox;
 pub mod rename_view;
+pub mod slot_groups;
 pub mod slot_list;
 pub mod sound_tags;
 pub mod theme;
