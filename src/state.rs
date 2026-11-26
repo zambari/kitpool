@@ -92,6 +92,9 @@ pub struct AppState {
     /// Preset groups per unit (MIDI port name).
     #[serde(default)]
     pub preset_groups: std::collections::BTreeMap<String, Vec<PresetGroup>>,
+    /// Sound Pool group slot ranges per unit (MIDI port name).
+    #[serde(default)]
+    pub sound_groups: std::collections::BTreeMap<String, Vec<SoundGroup>>,
 }
 
 fn default_open_banks() -> [bool; 8] {
@@ -112,6 +115,13 @@ fn default_focus() -> Role {
 pub struct PresetGroup {
     pub name: String,
     pub bank: String,
+    pub at: u16,
+    pub len: u16,
+}
+
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+pub struct SoundGroup {
+    pub name: String,
     pub at: u16,
     pub len: u16,
 }

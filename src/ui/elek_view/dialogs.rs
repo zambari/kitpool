@@ -45,6 +45,28 @@ pub(crate) fn finish(ui: &mut egui::Ui, st: &mut ElekState, out: &mut Vec<ElekIn
             }
         }
     }
+    if let Some(mr) = st.multi_rename.as_mut() {
+        let mut outcome = None;
+        egui::Modal::new(egui::Id::unique("ram_multi_rename")).show(ui.ctx(), |ui| {
+            ui.set_width(520.0);
+            ui.set_max_height(560.0);
+            ui.label("Rename on +Drive. Local filenames stay unchanged.");
+            outcome = crate::ui::rename_view::show(ui, mr, true);
+        });
+        if let Some(outcome) = outcome {
+            st.multi_rename = None;
+            if let crate::ui::rename_view::Outcome::Apply(rows) = outcome {
+                let files = rows.into_iter()
+                    .filter(|r| r.status == crate::rename::Status::Ok)
+                    .filter_map(|r| {
+                        let from = r.from.to_string_lossy().into_owned();
+                        let key = st.names.iter().find(|(_, path)| **path == from)?.0;
+                        Some((*key, from, r.new))
+                    }).collect();
+                out.push(ElekIntent::RenameFiles(files));
+            }
+        }
+    }
     let mut naming = st.group_naming.take();
     crate::ui::slot_groups::finish_naming(
         ui.ctx(),
@@ -65,8 +87,12 @@ pub(crate) fn finish(ui: &mut egui::Ui, st: &mut ElekState, out: &mut Vec<ElekIn
         if let Some(yes) = confirm_clear(ui.ctx(), st, olds) {
             let olds = st.confirm_clear.take().unwrap_or_default();
             if yes {
-                st.clear_olds(&olds);
+                let pull = std::mem::take(&mut st.clear_pull);
+                let refused = st.clear_olds(&olds, pull);
                 st.status = format!("Cleared {} used sample(s); what pointed at them now plays nothing", olds.len());
+                if let Some(why) = refused {
+                    st.status += &format!(" · not pulled up: {why}");
+                }
             } else {
                 st.status = format!("Kept {} used sample(s)", olds.len());
             }
@@ -296,4 +322,30 @@ fn confirm_close(ctx: &egui::Context, changed: usize) -> Option<bool> {
         });
     });
     answer
+}
+
+impl ElekState {
+    pub(super) fn begin_multi_rename(&mut self, slots: &[usize]) {
+        let mut paths = std::collections::HashSet::new();
+        let mut items = Vec::new();
+        for key in slots.iter().filter_map(|&slot| self.key_at(slot)) {
+            let Some(path) = self.names.get(&key) else {
+                self.status = "Wait for the selected samples' +Drive paths to load before renaming".into();
+                return;
+            };
+            let path = std::path::PathBuf::from(path);
+            if paths.insert(path.clone()) {
+                items.push((path, false));
+            }
+        }
+        if items.is_empty() {
+            return;
+        }
+        self.multi_rename = Some(crate::rename::MultiRename::new(items, true, |parent| {
+            self.names.values().filter_map(|path| {
+                let path = std::path::Path::new(path);
+                (path.parent() == Some(parent)).then(|| path.file_name()?.to_str().map(str::to_owned)).flatten()
+            }).collect()
+        }));
+    }
 }

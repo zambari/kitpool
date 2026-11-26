@@ -1445,6 +1445,10 @@ impl Worker {
                 let result = self.with_conn(|c| c.push_presets(&plan, &|label, done, total| {
                     em.send(Ev::Elek(ElekEv::PresetPushProgress { label: label.into(), done, total }));
                 }));
+                match &result {
+                    Ok(()) => crate::log::line(format!("presets: pushed {} op(s), verify {}", plan.ops.len(), plan.verify)),
+                    Err(e) => crate::log::line(format!("presets: push of {} op(s) failed: {e}", plan.ops.len())),
+                }
                 em.send(Ev::Elek(ElekEv::PresetsPushed(result)));
             }
             ElekCmd::ReadSounds => {

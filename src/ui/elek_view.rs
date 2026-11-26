@@ -65,6 +65,7 @@ pub struct ElekState {
     /// Renaming a pool sample's +Drive file: `(key, +Drive path, name typed
     /// so far, focus the field next frame)`.
     renaming: Option<((u32, u32), String, String, bool)>,
+    multi_rename: Option<crate::rename::MultiRename>,
     want_files: Option<Vec<(u16, std::path::PathBuf)>>,
     pub bank: [usize; 2],
     /// `(label, done, total)` while the device works.
@@ -78,6 +79,8 @@ pub struct ElekState {
     confirm_close: bool,
     /// Asking whether to clear these still-referenced slots (as read).
     confirm_clear: Option<Vec<u16>>,
+    /// The asked-about clear also pulls the samples below up into the gaps.
+    clear_pull: bool,
     /// After a push: the pool the device should now have.
     pub expect: Option<Vec<PoolEntry>>,
     pub asked_projects: bool,
@@ -245,6 +248,7 @@ pub enum ElekIntent {
     /// Rename the +Drive file behind a pool sample. Projects refer to it by
     /// hash, so nothing that uses it breaks.
     RenameFile { key: (u32, u32), from: String, to: String },
+    RenameFiles(Vec<((u32, u32), String, String)>),
     /// Move into the right column, next to the file panes.
     Dock,
     /// From the docked pool: open the project editor.
@@ -314,13 +318,15 @@ enum RowAct {
     CloseGap(usize),
     MoveHere(usize),
     Nudge(i32),
-    /// Empty these slots (unused ones at once, asks about the rest).
-    Clear(Vec<usize>),
+    /// Empty these slots (unused ones at once, asks about the rest); `true`
+    /// also pulls the samples below up so no empty slot is left behind.
+    Clear(Vec<usize>, bool),
     ClearUnused,
     Local((u32, u32), bool),
     ShowOriginal((u32, u32)),
     UpdateChanged(Vec<(u32, u32)>),
     Rename((u32, u32)),
+    MultiRename(Vec<usize>),
     /// Queue these pool samples for the preview cache.
     Fetch(Vec<(u32, u32)>),
     /// Local files dropped on this slot.

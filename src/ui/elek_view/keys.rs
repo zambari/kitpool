@@ -8,6 +8,14 @@ impl ElekState {
         if !self.keys_on || ctx.egui_wants_keyboard_input() || self.project.is_none() {
             return;
         }
+        if self.multi_rename.is_some() {
+            return;
+        }
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::SHIFT, egui::Key::F2)) {
+            let slots = self.sel.iter().copied().collect::<Vec<_>>();
+            self.begin_multi_rename(&slots);
+            return;
+        }
         let n = self.order.len();
         if self.group_held.is_some_and(|g| !self.group_selected(g)) {
             self.group_held = None;

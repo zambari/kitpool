@@ -336,7 +336,7 @@ pub(super) fn slot_pane(ui: &mut egui::Ui, st: &mut ElekState, side: usize) {
             RowAct::Group(g) => g.edits(),
             a => !matches!(
                 a,
-                RowAct::Click(..) | RowAct::DragStart(..) | RowAct::Local(..) | RowAct::ShowOriginal(_) | RowAct::Rename(_) | RowAct::Fetch(_) | RowAct::Clip(..) | RowAct::DropClip
+                RowAct::Click(..) | RowAct::DragStart(..) | RowAct::Local(..) | RowAct::ShowOriginal(_) | RowAct::Rename(_) | RowAct::MultiRename(_) | RowAct::Fetch(_) | RowAct::Clip(..) | RowAct::DropClip
             ),
         };
         if locked && edits {
@@ -379,15 +379,16 @@ pub(super) fn slot_pane(ui: &mut egui::Ui, st: &mut ElekState, side: usize) {
             RowAct::CloseGap(s) => st.close_gap(s),
             RowAct::MoveHere(s) => st.move_sel_to(s),
             RowAct::Nudge(d) => st.nudge(d),
-            RowAct::Clear(slots) => st.clear(&slots),
+            RowAct::Clear(slots, pull) => st.clear(&slots, pull),
             RowAct::ClearUnused => {
                 let slots = st.unused_slots();
-                st.clear(&slots);
+                st.clear(&slots, false);
             }
             RowAct::Local(k, open) => st.want_local = Some((k, open)),
             RowAct::ShowOriginal(k) => st.want_original = Some(k),
             RowAct::Fetch(keys) => st.want_fetch = Some(keys),
             RowAct::UpdateChanged(keys) => st.want_update = Some(keys),
+            RowAct::MultiRename(slots) => st.begin_multi_rename(&slots),
             RowAct::Rename(k) => {
                 if let Some(path) = st.names.get(&k).cloned() {
                     let name = path.rsplit('/').next().unwrap_or(&path).to_owned();

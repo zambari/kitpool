@@ -40,7 +40,7 @@ unit_state! {
     reconnect_ask: Option<usize>,
     pool_fetch: elek::PoolFetch,
     update_push: std::collections::HashSet<u16>,
-    pool_rename: Option<(u64, (u32, u32), String)>,
+    pool_rename: std::collections::HashMap<u64, ((u32, u32), String)>,
     relink_after: Option<(u64, (u32, u32), PathBuf)>,
     changed_paths: std::collections::HashSet<PathBuf>,
     changed_at: Option<std::time::Instant>,

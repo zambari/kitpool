@@ -229,7 +229,7 @@ fn accent_title(label: &str, active: bool, focused: bool, lit: bool, fill: Color
     }
 }
 
-/// One choice of the right column's FILES / SAMPLE POOL / +DRIVE switch,
+/// One choice of the right column's FILES / RAM / +DRIVE switch,
 /// with room around the label like the Sample Editor title. `device`
 /// choices use the pixel font and the device yellow.
 pub fn column_switch(label: &str, active: bool, focused: bool, device: bool) -> impl egui::Widget + '_ {

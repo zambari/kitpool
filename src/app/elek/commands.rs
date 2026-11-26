@@ -118,6 +118,20 @@ impl App {
                     Some((p, _)) => self.elek.status = format!("{} was moved or deleted since the upload", p.display()),
                     None => self.elek.status = "No local original known for this sample".into(),
                 },
+                ElekIntent::RenameFiles(files) => {
+                    for (key, from, to) in files {
+                        let from = PathBuf::from(from);
+                        let target = from.with_file_name(&to);
+                        if to.trim().is_empty() || to.contains('/') || to.contains('\\') || target == from {
+                            continue;
+                        }
+                        let job = self.run_device(
+                            crate::device::Task::Rename { from, to: target.clone() },
+                            "Renaming", 1, 0,
+                        );
+                        self.pool_rename.insert(job, (key, target.to_string_lossy().into_owned()));
+                    }
+                }
                 ElekIntent::RenameFile { key, from, to } => {
                     let to = to.trim();
                     let from = PathBuf::from(from);
@@ -132,7 +146,7 @@ impl App {
                         1,
                         0,
                     );
-                    self.pool_rename = Some((job, key, target.to_string_lossy().into_owned()));
+                    self.pool_rename.insert(job, (key, target.to_string_lossy().into_owned()));
                     self.relink_after = Some((job, key, target));
                 }
                 ElekIntent::Push { force } => self.elek_push(force, false),

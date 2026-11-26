@@ -180,23 +180,16 @@ pub(super) fn pattern_menu(ui: &mut egui::Ui, ed: &mut ProjEd, p: &Patterns, men
     if !ed.sel.contains(&i) {
         ed.select_only(i);
     }
-    if ui.add_enabled(editable, egui::Button::new("Rename…  ⏎")).clicked() {
-        if ed.targets().len() > 1 {
-            ed.focus_name = true;
-        } else {
-            ed.start_inline(p, i);
-        }
-        ui.close();
-    }
-    if ui.button(if open { "Fold  ←" } else { "Fold out  →" }).clicked() {
+    if ui.add(egui::Button::new(if open { "Fold" } else { "Fold out" }).shortcut_text(if open { "←" } else { "→" })).clicked() {
         actions.toggles.push(i);
         ui.close();
     }
-    if ui.button("Copy pattern  ⌘C").clicked() {
+    ui.separator();
+    if ui.add(egui::Button::new("Copy pattern").shortcut_text("⌘C")).clicked() {
         actions.status = Some(copy(ed));
         ui.close();
     }
-    if ui.add_enabled(editable && ed.pattern_count() > 0, egui::Button::new("Paste here  ⌘V")).clicked() {
+    if ui.add_enabled(editable && ed.pattern_count() > 0, egui::Button::new("Paste here").shortcut_text("⌘V")).clicked() {
         actions.status = Some(paste(ed));
         ui.close();
     }
@@ -211,12 +204,13 @@ pub(super) fn pattern_menu(ui: &mut egui::Ui, ed: &mut ProjEd, p: &Patterns, men
             });
         });
     }
-    if ui.add_enabled(editable && p.can_clear(), egui::Button::new("Clear  ⌫")).clicked() {
-        actions.status = Some(clear(ed, p));
-        ui.close();
-    }
-    if ui.add_enabled(editable, egui::Button::new("Pack bank (used patterns first)")).clicked() {
-        actions.status = Some(pack(ed, p));
+    ui.separator();
+    if ui.add_enabled(editable, egui::Button::new("Rename…").shortcut_text("⏎")).clicked() {
+        if ed.targets().len() > 1 {
+            ed.focus_name = true;
+        } else {
+            ed.start_inline(p, i);
+        }
         ui.close();
     }
     ui.separator();
@@ -243,6 +237,16 @@ pub(super) fn pattern_menu(ui: &mut egui::Ui, ed: &mut ProjEd, p: &Patterns, men
         .clicked()
     {
         ed.want.push(ElekIntent::LoadPattern(i));
+        ui.close();
+    }
+    ui.separator();
+    if ui.add_enabled(editable, egui::Button::new("Pack bank (used patterns first)")).clicked() {
+        actions.status = Some(pack(ed, p));
+        ui.close();
+    }
+    ui.separator();
+    if ui.add_enabled(editable && p.can_clear(), egui::Button::new("Clear").shortcut_text("⌫")).clicked() {
+        actions.status = Some(clear(ed, p));
         ui.close();
     }
 }

@@ -54,6 +54,8 @@ pub(super) struct TrackClip {
 /// One sound copied on Pool, Presets or Patterns, shared across all three.
 #[derive(Clone)]
 pub struct PoolClip {
+    /// Remaining sounds in a multi-copy, in selection order.
+    pub rest: Vec<PoolClip>,
     /// The pool sound it was copied from (index).
     pub at: usize,
     /// That sound as it was when copied (where it was read from, its name).
@@ -68,6 +70,12 @@ pub struct PoolClip {
 }
 
 impl PoolClip {
+    pub fn items(&self) -> Vec<PoolClip> {
+        let mut first = self.clone();
+        first.rest.clear();
+        std::iter::once(first).chain(self.rest.iter().cloned()).collect()
+    }
+
     pub fn desc(&self) -> String {
         if self.carry.is_some() && matches!(self.cell.src, SoundSrc::Preset { .. }) {
             format!("sound “{}” from another project", self.name)
@@ -93,6 +101,15 @@ impl ProjEd {
         self.xtrack_snd = None;
         self.xtcopy = None;
         self.pool_clip = None;
+    }
+
+    pub fn set_pool_clips(&mut self, mut clips: Vec<PoolClip>) {
+        self.clear_sound_clipboard();
+        if !clips.is_empty() {
+            let mut first = clips.remove(0);
+            first.rest = clips;
+            self.pool_clip = Some(first);
+        }
     }
 
     pub fn set_pool_clip(&mut self, c: PoolClip) {
@@ -438,7 +455,7 @@ pub(super) fn finish_sound_actions(st: &mut ElekState, ctx: &egui::Context) {
             })).ok_or("This track has no sound to copy")?;
             let sound = proj.pool_sound_for_track(&cell)?;
             let carry = carry_sound(st, &cell);
-            Ok::<_, String>(PoolClip { at: match cell.src { SoundSrc::Read(o) => o as usize, _ => 0 }, cell, name: sound.name, track_ok: Ok(()), carry })
+            Ok::<_, String>(PoolClip { at: match cell.src { SoundSrc::Read(o) => o as usize, _ => 0 }, cell, name: sound.name, track_ok: Ok(()), carry, rest: Vec::new() })
         })();
         match result {
             Ok(clip) => {
@@ -491,13 +508,14 @@ pub(super) fn edited_track_cell(c: &Cell, t: usize) -> Option<SoundCell> {
 /// The Copy track / sound / events items of a track's menu.
 pub(super) fn copy_items(ui: &mut egui::Ui, ed: &mut ProjEd, audio: usize) -> Option<String> {
     let mut status = None;
-    for (part, text) in [(Part::Track, "Copy track  ⌘C"), (Part::Sound, "Copy track sound"), (Part::Events, "Copy track events")] {
+    for (part, text) in [(Part::Track, "Copy track"), (Part::Sound, "Copy track sound"), (Part::Events, "Copy track events")] {
         let tip = match part {
             Part::Track => "Its trigs, p-locks and sound",
             Part::Sound => "The kit sound (sample, parameters, tags); a single sound can also be pasted into Pool or Presets",
             Part::Events => "Trigs, length, scale and p-locks; drops a copied sound",
         };
-        if ui.button(text).on_hover_text(tip).clicked() {
+        let button = egui::Button::new(text).shortcut_text(if part == Part::Track { "⌘C" } else { "" });
+        if ui.add(button).on_hover_text(tip).clicked() {
             let msg = copy_tracks(ed, part, audio);
             // ⌘V only arrives when the system clipboard holds text.
             ui.ctx().copy_text(msg.clone());
@@ -513,9 +531,9 @@ pub(super) fn paste_items(ui: &mut egui::Ui, ed: &mut ProjEd, p: &Patterns, into
     let mut status = None;
     for (part, text) in [(Part::Track, "Paste track"), (Part::Sound, "Paste track sound"), (Part::Events, "Paste track events")] {
         let ok = ed.can_paste(part);
-        let label = if part == Part::Track { format!("{text}  ⌘V") } else { text.to_owned() };
+        let button = egui::Button::new(text).shortcut_text(if part == Part::Track { "⌘V" } else { "" });
         let tip = if ok { format!("Paste {} into the same track numbers", tclip_desc(ed, part, audio)) } else { "Nothing copied for this yet".to_owned() };
-        if ui.add_enabled(editable && ok, egui::Button::new(label)).on_hover_text(tip.clone()).on_disabled_hover_text(tip).clicked() {
+        if ui.add_enabled(editable && ok, button).on_hover_text(tip.clone()).on_disabled_hover_text(tip).clicked() {
             status = Some(paste_tracks(ed, p, into.to_vec(), part, audio));
             ui.close();
         }
@@ -530,7 +548,7 @@ pub(super) fn paste_items(ui: &mut egui::Ui, ed: &mut ProjEd, p: &Patterns, into
             _ => "Select the track(s) to paste onto first (click a track name in a folded-out pattern)".to_owned(),
         };
         ui.separator();
-        if ui.add_enabled(editable && ok, egui::Button::new(format!("Paste {}  ⌘V", c.desc()))).on_hover_text(tip.clone()).on_disabled_hover_text(tip).clicked() {
+        if ui.add_enabled(editable && ok, egui::Button::new(format!("Paste {}", c.desc())).shortcut_text("⌘V")).on_hover_text(tip.clone()).on_disabled_hover_text(tip).clicked() {
             let ts: Vec<u8> = ed.tsel.iter().copied().collect();
             status = Some(request_sound_paste(ed, into[0], &ts));
             ui.close();
@@ -571,6 +589,7 @@ pub(super) fn confirm_tracks(ctx: &egui::Context, c: &TrackPaste) -> Option<bool
 
 /// Validate and apply the captured sound paste, asking before adding a sample.
 pub(crate) fn paste_sound_on_tracks(st: &mut ElekState, c: PoolClip, i: usize, tracks: Vec<u8>, confirmed: bool) -> Result<String, String> {
+    if !c.rest.is_empty() { return Err("Multiple sounds are on the clipboard: paste them on Pool or Presets, or copy one sound for Patterns".into()); }
     if st.edit_locked() { return Err("The device is busy".into()); }
     let proj = st.project.as_deref().ok_or("No project loaded")?;
     let p = proj.patterns.as_deref().map_err(|e| e.clone())?;

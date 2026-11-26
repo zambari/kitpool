@@ -5,6 +5,8 @@
 Read [MAP.md](MAP.md) first when a request names a concept, a button or a panel. It covers the vocabulary ("device" and "+Drive" mean an Elektron sampler), which control lives in which function, where styling is set, and where the job queues are. 
 If you find an entry wrong, fix it.
 
+Try to re-use existing mechanism, check if something needs to be added to the right click menu for symmetry. Gropus stay as blocks. empty slots have meanings, sometimes we get rid of them, sometimes we don't, this is action conetext specific.
+
 ## Workflow rules
 
 - **Build after every code change, but never kill or launch the app.** The user keeps the app running while they work. At the end of each round where code changed, just build:

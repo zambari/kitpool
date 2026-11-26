@@ -22,6 +22,8 @@ pub struct MultiRename {
     taken: HashMap<PathBuf, HashSet<String>>,
     /// The Find field still has to grab focus.
     pub focus_find: bool,
+    /// The shared view has restored the session-only Find / Replace values.
+    pub(crate) session_loaded: bool,
 }
 
 #[derive(Clone, PartialEq)]
@@ -81,6 +83,7 @@ impl MultiRename {
             device,
             taken,
             focus_find: true,
+            session_loaded: false,
         }
     }
 

@@ -510,7 +510,9 @@ impl Conn {
             }
             if let Some(expected) = expected {
                 let container = self.preset_data(&loc.path(), &|_| {})?;
-                if decode_sound(model, &container).map_err(Fail::Refused)? != expected {
+                let got = decode_sound(model, &container).map_err(Fail::Refused)?;
+                if got != expected {
+                    log_diff(loc, expected, got);
                     return refused(
                         "Preset read-back differs from the staged edits. Reload presets to see what is on the device.",
                     );
@@ -521,6 +523,19 @@ impl Conn {
         progress(if plan.verify { "Presets pushed and verified" } else { "Live presets saved" }, total, total);
         Ok(())
     }
+}
+
+/// Which bytes a read-back changed, so a refused verify can be diagnosed.
+fn log_diff(loc: &PresetSlot, sent: &[u8], got: &[u8]) {
+    let diffs: Vec<String> = sent.iter().zip(got).enumerate()
+        .filter(|(_, (a, b))| a != b)
+        .map(|(i, (a, b))| format!("{i}:{a:02x}->{b:02x}"))
+        .collect();
+    crate::log::line(format!(
+        "presets: read-back {}:{:03} differs, sent {} bytes, got {}, {} byte(s) differ: {}",
+        loc.bank, loc.slot, sent.len(), got.len(), diffs.len(),
+        diffs.iter().take(40).cloned().collect::<Vec<_>>().join(" ")
+    ));
 }
 
 /// Data uploads are permitted only to an exact preset slot; chunk/close

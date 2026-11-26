@@ -90,7 +90,7 @@ pub(super) fn sound_foldout(f: SoundFold) -> f32 {
         lr.context_menu(|ui| {
             let nm = if s.name.is_empty() { "—" } else { s.name.as_str() };
             ui.label(RichText::new(format!("T{} sound “{nm}” of {}", t + 1, patterns::label(i))).weak());
-            if ui.button("Copy sound  ⌘C").on_hover_text("Paste it into Pool, Presets, or any audio track on Patterns").clicked() {
+            if ui.add(egui::Button::new("Copy sound").shortcut_text("⌘C")).on_hover_text("Paste it into Pool, Presets, or any audio track on Patterns").clicked() {
                 *copy = Some((i, t));
                 ui.close();
             }
@@ -99,7 +99,7 @@ pub(super) fn sound_foldout(f: SoundFold) -> f32 {
             let tip = paste_clip.map_or("Copy a sound on Pool, Presets, or Patterns first", |c| {
                 c.track_ok.as_ref().err().map(String::as_str).unwrap_or("Replace this track's sound; its trigs and p-locks stay")
             });
-            if ui.add_enabled(ok, egui::Button::new(format!("Paste {label} here  ⌘V"))).on_hover_text(tip).on_disabled_hover_text(tip).clicked() {
+            if ui.add_enabled(ok, egui::Button::new(format!("Paste {label} here")).shortcut_text("⌘V")).on_hover_text(tip).on_disabled_hover_text(tip).clicked() {
                 *paste = Some((i, t));
                 ui.close();
             }

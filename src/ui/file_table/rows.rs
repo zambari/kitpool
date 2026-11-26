@@ -52,9 +52,11 @@ pub(super) fn rows(ui: &mut Ui, tab: &mut DirTab, cx: &TableCtx<'_>, intents: &m
     }
     bg.context_menu(|ui| {
         let with = if tab.device { Vec::new() } else { tab.effective_selection() };
-        new_folder_button(ui, cx, tab.cwd.clone(), None, with, intents);
         paste_button(ui, cx, None, intents);
+        ui.separator();
+        new_folder_button(ui, cx, tab.cwd.clone(), None, with, intents);
         if !tab.device {
+            ui.separator();
             reveal_button(ui, tab.cwd.clone(), intents);
         }
     });

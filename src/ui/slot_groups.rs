@@ -868,13 +868,15 @@ impl Slots<'_> {
             _ => None,
         };
         let loose = |id: u16| self.free(id) && !grouped.contains(&id);
-        let absorbs = |id: u16| {
-            (loose(id) && !self.insert) || (self.free(id) && into.is_some_and(|g| groups[g].members.contains(&id)))
-        };
+        // Only a group being dropped into takes up the push with its own
+        // empty slots. Loose empty slots are information: they travel with
+        // the push like samples do.
+        let absorbs = |id: u16| self.free(id) && into.is_some_and(|g| groups[g].members.contains(&id));
+        // A group left closes up: the rest of its bank moves up, gaps
+        // included, and the lifted slot goes to the bank's end.
         for &p in closes.iter().rev() {
             let end = self.bank_end(p);
-            let e = (p + 1..end).find(|&i| cells[i].is_none_or(loose)).unwrap_or(end);
-            cells[p..e].rotate_left(1);
+            cells[p..end].rotate_left(1);
         }
         // Where the moved slots go, in the lifted-out layout.
         let at = match d {
@@ -900,37 +902,65 @@ impl Slots<'_> {
             let mut groups = groups.clone();
             let mut spare = Vec::new();
             let mut carry = std::collections::VecDeque::new();
-            if up {
-                // The block ends right before `at` (Into) or covers at..at+m.
+            // Slots pushed into, in push order (away from the landing spot).
+            let mut path = Vec::new();
+            let no_room = if up { "No empty slot above to make room" } else { "No empty slot below to make room" };
+            // The push runs until a lifted slot takes it up or the bank's
+            // edge; whatever is still carried there needs that many loose
+            // empty slots dropped, the ones furthest from the landing first.
+            let mut incoming: Box<dyn Iterator<Item = u16>> =
+                if up { Box::new(moved.iter().rev().copied()) } else { Box::new(moved.iter().copied()) };
+            let (start, edge) = if up {
                 let end = if into.is_some() { at } else { at + m };
-                let mut incoming = moved.iter().rev().copied();
-                let mut i = end;
-                loop {
-                    let Some(next) = incoming.next().or_else(|| carry.pop_front()) else { break };
-                    if i <= first {
-                        return Err("No empty slot above to make room".into());
+                let lo = end.checked_sub(m).ok_or(no_room)?;
+                (end, (lo / self.bank * self.bank).max(first))
+            } else {
+                (at, self.bank_end(at + m - 1))
+            };
+            let mut i = start;
+            let mut left = Vec::new();
+            loop {
+                let Some(next) = incoming.next().or_else(|| carry.pop_front()) else { break };
+                let out = if up { i <= edge } else { i >= edge };
+                if out {
+                    left.push(next);
+                    if incoming.next().is_some() {
+                        return Err(no_room.into());
                     }
+                    left.extend(carry.drain(..));
+                    break;
+                }
+                if up {
                     i -= 1;
-                    match cells[i].replace(next) {
-                        Some(old) if absorbs(old) => spare.push(old),
-                        Some(old) => carry.push_back(old),
-                        None => {}
+                }
+                path.push(i);
+                match cells[i].replace(next) {
+                    Some(old) if absorbs(old) => spare.push(old),
+                    Some(old) => carry.push_back(old),
+                    None => {}
+                }
+                if !up {
+                    i += 1;
+                }
+            }
+            if !left.is_empty() {
+                let mut seq: Vec<u16> = path.iter().map(|&p| cells[p].expect("pushed slots are filled")).collect();
+                seq.extend(&left);
+                let mut need = left.len();
+                for k in (0..seq.len()).rev() {
+                    if need == 0 {
+                        break;
+                    }
+                    if loose(seq[k]) && !moved.contains(&seq[k]) {
+                        spare.push(seq.remove(k));
+                        need -= 1;
                     }
                 }
-            } else {
-                let mut incoming = moved.iter().copied();
-                let mut i = at;
-                loop {
-                    let Some(next) = incoming.next().or_else(|| carry.pop_front()) else { break };
-                    if i >= n {
-                        return Err("No empty slot below to make room".into());
-                    }
-                    match cells[i].replace(next) {
-                        Some(old) if absorbs(old) => spare.push(old),
-                        Some(old) => carry.push_back(old),
-                        None => {}
-                    }
-                    i += 1;
+                if need > 0 {
+                    return Err(no_room.into());
+                }
+                for (&p, id) in path.iter().zip(seq) {
+                    cells[p] = Some(id);
                 }
             }
             let spare_ids: HashSet<u16> = spare.iter().copied().collect();
@@ -1046,6 +1076,104 @@ impl Slots<'_> {
         Ok(Plan { order, groups: self.groups.to_vec(), note })
     }
 
+    /// Empty and in no group: a slot a push or pull may use up. A group's
+    /// empty slots move with it.
+    fn loose(&self, id: u16) -> bool {
+        self.free(id) && !self.groups.iter().any(|g| g.members.contains(&id))
+    }
+
+    /// `n` empty slots at `at`: it and everything below it in the bank
+    /// move down together, gaps included (empty slots are information too).
+    /// Each new empty takes the bank's last loose empty slot, so trailing
+    /// empties go first. Groups in the way move down whole.
+    pub fn plan_insert_empty(&self, at: usize, n: usize) -> Result<Plan, String> {
+        if let Some(g) = self.group_at(at).filter(|&g| self.group_spans()[g].start != at) {
+            return Err(format!("Groups stay packed: insert above or below \"{}\"", self.groups[g].name));
+        }
+        let end = self.bank_end(at);
+        let mut order = self.order.to_vec();
+        let mut made = 0;
+        let mut inner = Vec::new();
+        while made < n {
+            let from = at + made.max(1);
+            let Some(e) = (from..end).rev().find(|&i| self.loose(order[i])) else { break };
+            // A gap with something after it is used up only when the bank
+            // has no empty slots left at its end.
+            if (e + 1..end).any(|i| !self.free(order[i])) {
+                inner.push(e);
+            }
+            order[at..=e].rotate_right(1);
+            made += 1;
+        }
+        if made == 0 {
+            return Err("No empty slot left in this bank (outside groups) to make room".into());
+        }
+        self.check_groups(&order, self.groups)?;
+        let short = if made < n { format!(" (only {made} of {n}: no more empty slots in this bank)") } else { String::new() };
+        let mut note = format!("Inserted {made} empty at {}; the rest of the bank moves down{short}", self.range(at, made));
+        if !inner.is_empty() {
+            note += &format!(" · no room at the bank's end: used up {} gap(s) further down", inner.len());
+        }
+        Ok(Plan { order, groups: self.groups.to_vec(), note })
+    }
+
+    /// Where an empty slot would go right above (`below` false) or below
+    /// group `g`, when the neighbour on that side, in its bank, holds
+    /// something. `Err` says why not.
+    pub fn gap_beside(&self, g: usize, below: bool) -> Result<usize, String> {
+        let span = self.group_spans().get(g).cloned().ok_or("No such group")?;
+        let (at, nb) = if below { (span.end, span.end) } else { (span.start, span.start.wrapping_sub(1)) };
+        if nb < self.first || nb >= self.order.len() || nb / self.bank != span.start / self.bank {
+            return Err(format!("The group is at the {} of its bank", if below { "end" } else { "start" }));
+        }
+        if self.free(self.order[nb]) {
+            return Err(format!("{} is already empty", self.label(nb)));
+        }
+        Ok(at)
+    }
+
+    /// An empty slot right outside group `g` (`gap_beside`), moving the rest
+    /// of the bank down (`plan_insert_empty`).
+    pub fn plan_gap_beside(&self, g: usize, below: bool) -> Result<Plan, String> {
+        let at = self.gap_beside(g, below)?;
+        self.plan_insert_empty(at, 1)
+    }
+
+    /// Takes out the empty slots at `ats`: everything below each in its bank
+    /// moves up together, gaps included, and the freed slot goes to the
+    /// bank's end. Groups in the way move up whole; a grouped empty slot
+    /// leaves its group.
+    pub fn plan_close_gaps(&self, ats: &[usize]) -> Result<Plan, String> {
+        let mut ats: Vec<usize> = ats.iter().copied().filter(|&a| a >= self.first && a < self.order.len()).collect();
+        ats.sort_unstable();
+        ats.dedup();
+        let mut order = self.order.to_vec();
+        let mut groups = self.groups.to_vec();
+        // Bottom-up, so closing one never moves a gap still to close.
+        for &at in ats.iter().rev() {
+            let id = order[at];
+            if !self.free(id) {
+                continue;
+            }
+            for g in &mut groups {
+                g.members.retain(|&x| x != id);
+            }
+            let end = self.bank_end(at);
+            order[at..end].rotate_left(1);
+        }
+        let emptied: Vec<String> = groups.iter().filter(|g| g.members.is_empty()).map(|g| g.name.clone()).collect();
+        groups.retain(|g| !g.members.is_empty());
+        self.check_groups(&order, &groups)?;
+        let mut note = match ats.as_slice() {
+            [a] => format!("Closed gap at {}", self.label(*a)),
+            _ => format!("Closed {} gaps", ats.len()),
+        };
+        for name in emptied {
+            note += &format!(" · \"{name}\" ends (empty)");
+        }
+        Ok(Plan { order, groups, note })
+    }
+
     /// Every group packed, inside one bank.
     fn check_groups(&self, order: &[u16], groups: &[Group]) -> Result<(), String> {
         let pos = positions(order);
@@ -1144,6 +1272,9 @@ pub enum GroupAct {
     Dissolve(usize),
     /// Drop the group's empty slots; what it holds closes up.
     Compact(usize),
+    /// Insert an empty slot right outside the group: `(group, below)`.
+    /// Above pushes the group down; below pushes what follows it.
+    Gap(usize, bool),
     /// Hue offset for every group of this name (0 forgets it).
     Hue(String, f32),
     Select(usize),
@@ -1242,6 +1373,10 @@ pub trait GroupHost {
             }
             GroupAct::Compact(g) => {
                 let r = self.slots().compact_group(g);
+                self.apply(r, None);
+            }
+            GroupAct::Gap(g, below) => {
+                let r = self.slots().plan_gap_beside(g, below);
                 self.apply(r, None);
             }
             GroupAct::Hue(key, h) => self.set_hue(key, h),

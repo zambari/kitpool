@@ -1,6 +1,7 @@
 //! Undoable sample-pool ordering, clearing, clipboard and file-drop edits.
 
 use super::*;
+use crate::ui::slot_groups::GroupHost;
 
 impl ElekState {
     /// Put a new +Drive file into empty entry `old`, as an undoable edit.
@@ -194,9 +195,24 @@ impl ElekState {
 
     pub(super) fn undo(&mut self) {
         if let Some(u) = self.undo.pop() {
+            // The selection and cursor stay on the same samples, so a moved
+            // group's selection goes back with it.
+            let picked: HashSet<u16> = self.sel.iter().filter_map(|&s| self.order.get(s).copied()).collect();
+            let cur = self.cursor.and_then(|c| self.order.get(c).copied());
             self.order = u.order;
+            self.sel = self
+                .order
+                .iter()
+                .enumerate()
+                .filter(|(_, o)| picked.contains(o))
+                .map(|(i, _)| i)
+                .collect();
+            self.cursor = cur.and_then(|c| self.order.iter().position(|&o| o == c));
             self.fills = u.fills;
             self.groups = u.groups;
+            if self.group_held.is_some() {
+                self.group_held = (0..self.group_spans().len()).find(|&g| self.group_selected(g));
+            }
             self.status = "Undone".into();
             self.edited_at = Some(std::time::Instant::now());
             self.sync_saved_groups();
@@ -236,46 +252,30 @@ impl ElekState {
         self.reveal = self.cursor;
     }
 
-    /// Puts `n` empty slots at `at`, pushing `at` and the samples below it
-    /// down; each one uses up the next empty slot further down.
+    /// Puts `n` empty slots at `at`, moving the rest of the bank down, gaps
+    /// included (`plan_insert_empty`).
     pub(super) fn insert_empty(&mut self, at: usize, n: usize) {
         if self.project.is_none() || n == 0 {
             return;
         }
-        if let Some(g) = self.group_at(at).filter(|&g| self.group_spans()[g].start != at) {
-            self.status = format!("Groups stay packed: insert above or below \"{}\"", self.groups[g].name);
-            return;
-        }
-        let mut order = self.order.clone();
-        let (made, last) = slot_list::insert_empty(&mut order, at, n, |o| self.free(*o));
-        if made == 0 {
-            self.status = "No empty slot below to make room".into();
-            return;
-        }
-        self.edit(|o| *o = order);
-        let short = if made < n { format!(" (only {made} of {n}: no more empty slots below)") } else { String::new() };
-        self.status = if made == 1 {
-            format!("Inserted empty at {}; shifted down to {}{short}", self.label(at), self.label(last))
-        } else {
-            format!("Inserted {made} empty at {}–{}; shifted down to {}{short}", self.label(at), self.label(at + made - 1), self.label(last))
-        };
+        let r = self.slots().plan_insert_empty(at, n);
+        self.apply(r, None);
     }
 
-    /// Removes the empty slot at `at`, pulling the samples below it up as far
-    /// as the next empty slot.
+    /// Removes the empty slot at `at`, moving the rest of the bank up, gaps
+    /// included (`plan_close_gaps`).
     pub(super) fn close_gap(&mut self, at: usize) {
         if self.project.is_none() {
             return;
         }
-        let mut order = self.order.clone();
-        slot_list::close_gap(&mut order, at, |o| self.free(*o));
-        self.edit(|o| *o = order);
-        self.status = format!("Closed gap at {}", self.label(at));
+        let r = self.slots().plan_close_gaps(&[at]);
+        self.apply(r, None);
     }
 
     /// Empties `slots` (as ordered now): the unused ones straight away, then
     /// asks before emptying any that kits, locks or sounds still point at.
-    pub(super) fn clear(&mut self, slots: &[usize]) {
+    /// `pull` closes each emptied slot by moving the samples below it up.
+    pub(super) fn clear(&mut self, slots: &[usize], pull: bool) {
         let Some(p) = &self.project else { return };
         if p.partial {
             self.status = "Wait for the read to finish: use counts aren't known yet".into();
@@ -288,22 +288,28 @@ impl ElekState {
             .filter(|&o| !self.free(o))
             .collect();
         let (used, unused): (Vec<u16>, Vec<u16>) = olds.into_iter().partition(|&o| p.uses[o as usize] > 0);
-        if !unused.is_empty() {
-            self.clear_olds(&unused);
-        }
+        let refused = if unused.is_empty() { None } else { self.clear_olds(&unused, pull) };
         self.status = match (unused.len(), used.len()) {
             (0, 0) => "Nothing to clear".into(),
             (0, _) => String::new(),
             (n, _) => format!("Cleared {n} unused sample(s)"),
         };
+        if let Some(why) = refused {
+            self.status += &format!(" · not pulled up: {why}");
+        }
         if !used.is_empty() {
             self.confirm_clear = Some(used);
+            self.clear_pull = pull;
         }
     }
 
-    /// Empties pool entries `olds` (as read), as one undoable edit.
-    pub(super) fn clear_olds(&mut self, olds: &[u16]) {
-        let Some(p) = &self.project else { return };
+    /// Empties pool entries `olds` (as read), as one undoable edit. With
+    /// `pull`, each emptied slot is closed up like "Remove this empty slot".
+    /// Returns why the pull was refused (the slots stay cleared), if it was.
+    pub(super) fn clear_olds(&mut self, olds: &[u16], pull: bool) -> Option<String> {
+        let Some(p) = &self.project else { return None };
+        let mut refused = None;
+        let undo_len = self.undo.len();
         let was: Vec<bool> = olds.iter().map(|&o| p.pool[o as usize].is_empty()).collect();
         self.push_undo();
         self.edited_at = Some(std::time::Instant::now());
@@ -315,7 +321,20 @@ impl ElekState {
                 self.fills.insert(o, PoolEntry::EMPTY);
             }
         }
+        if pull {
+            let at: Vec<usize> = olds.iter().filter_map(|&o| self.order.iter().position(|&x| x == o)).collect();
+            let plan = self.slots().plan_close_gaps(&at);
+            match plan {
+                Ok(p) => {
+                    self.commit(p.order, p.groups);
+                    // Clear and pull are one step for ⌘Z.
+                    self.undo.truncate(undo_len + 1);
+                }
+                Err(why) => refused = Some(why),
+            }
+        }
         self.sync_saved_groups();
+        refused
     }
 
     /// Every non-empty slot nothing points at.

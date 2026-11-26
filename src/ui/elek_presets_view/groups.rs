@@ -25,7 +25,7 @@ pub(super) enum Align {
 }
 
 impl PresetView {
-    fn bank_list(&self) -> &[String] {
+    pub(super) fn bank_list(&self) -> &[String] {
         match &self.banks {
             Some(Ok(b)) => b,
             _ => &[],

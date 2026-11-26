@@ -88,19 +88,18 @@ impl ProjEd {
     /// loaded there): a stand-alone sound (like a preset), since the
     /// project it points into is gone.
     fn carried_pool_clip(&self, p: Option<&ElekProject>) -> Option<PoolClip> {
-        self.pool_clip.clone()
-            .and_then(|mut c| {
-                if !matches!(c.cell.src, SoundSrc::Preset { .. }) {
-                    c.cell = c.carry.as_ref()?.0.clone();
-                }
-                Some(c)
-            })
-            .map(|mut c| {
-                if let Some(p) = p {
-                    c.track_ok = p.pool_sound_for_track(&c.cell).map(|_| ());
-                }
-                c
-            })
+        let mut clips = self.pool_clip.as_ref()?.items();
+        for c in &mut clips {
+            if !matches!(c.cell.src, SoundSrc::Preset { .. }) {
+                c.cell = c.carry.as_ref()?.0.clone();
+            }
+            if let Some(p) = p {
+                c.track_ok = p.pool_sound_for_track(&c.cell).map(|_| ());
+            }
+        }
+        let mut first = clips.remove(0);
+        first.rest = clips;
+        Some(first)
     }
 
     /// Another unit became active and `from` is the one left: the

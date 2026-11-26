@@ -898,7 +898,7 @@ impl App {
                             self.status = self.status.replacen("Done", &note, 1);
                         }
                     }
-                    if let Some((_, key, path)) = self.pool_rename.take_if(|(id, ..)| *id == job) {
+                    if let Some((key, path)) = self.pool_rename.remove(&job) {
                         if !cancelled && errors_empty {
                             self.elek.status = format!("Renamed on the +Drive to {path}");
                             self.elek.names.insert(key, path);

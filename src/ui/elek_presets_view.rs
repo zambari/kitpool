@@ -36,8 +36,8 @@ pub struct PresetView {
     grab: slot_list::Grab,
     active: usize,
     reveal: Option<usize>,
-    /// Per edit: the op count and groups before it.
-    undo: Vec<(usize, Vec<Group>)>,
+    /// Per edit: the op count, groups, selection and cursor before it.
+    undo: Vec<(usize, Vec<Group>, BTreeSet<usize>, Option<usize>)>,
     pending: Option<Reorder>,
     filter: String,
     hide_empty: bool,
@@ -59,7 +59,7 @@ pub struct PresetView {
     confirm_reload: bool,
     confirm_push: bool,
     /// Copy waiting for its preset; the key is a full re-read it waits on.
-    copy_pending: Option<(PresetSlot, PresetSource, Option<(String, u32)>)>,
+    copy_pending: Option<Vec<(PresetSlot, PresetSource, Option<(String, u32)>)>>,
     /// Preset groups shown, members numbered across banks as shown now
     /// (see `groups.rs`); `base_groups` as of the device (no edits staged).
     groups: Vec<Group>,
@@ -402,7 +402,7 @@ impl PresetView {
         }
         // Live needs no preset data for moves, swaps or clears; a manual push
         // reads what it checks through `request_push_data`.
-        self.undo.push((self.ops.len(), self.groups.clone()));
+        self.undo.push((self.ops.len(), self.groups.clone(), self.sel.clone(), self.cursor));
         self.ops.extend(ops);
         if let Some(g) = groups {
             self.groups = g;
@@ -435,12 +435,31 @@ impl PresetView {
     }
 
     fn undo(&mut self) {
-        if let Some((len, groups)) = self.undo.pop() {
+        if let Some((len, groups, sel, cursor)) = self.undo.pop() {
             self.ops.truncate(len);
             self.groups = groups;
             self.edited_at = Some(std::time::Instant::now());
             self.refresh_slots();
             self.groups_changed();
+            // The selection goes back with the slots (a moved group's
+            // selection returns to where the group lands again).
+            let held = self.group_held.is_some();
+            self.sel = sel;
+            self.cursor = cursor;
+            self.group_held = None;
+            if held {
+                let g = {
+                    let slots = self.slots();
+                    (0..slots.group_spans().len()).find(|&g| slots.group_selected(g))
+                };
+                self.group_held = g;
+            }
+            if let Some(c) = self.cursor {
+                let banks = self.bank_list();
+                if banks.get(c / BANK) == Some(&self.bank[self.active]) {
+                    self.selected[self.active] = Some((c % BANK + 1) as u32);
+                }
+            }
         }
     }
 
@@ -638,7 +657,16 @@ impl PresetView {
             self.selected[self.active] = Some((c % 256 + 1) as u32);
             self.reveal = Some(c);
         }
+        let steps = self.undo.len();
         self.stage_with(ops, edit.groups);
+        // Undo puts the selection back where it was before this edit, not
+        // where `stage_with` saw it (already moved along with the slots).
+        if self.undo.len() > steps {
+            if let Some(u) = self.undo.last_mut() {
+                u.2 = edit.sel.clone();
+                u.3 = edit.cursor;
+            }
+        }
         if let Some(g) = edit.select {
             self.select_group(g);
             let span = self.slots().group_spans().get(g).cloned();
@@ -1321,100 +1349,142 @@ pub fn show(ui: &mut egui::Ui, st: &mut ElekState) -> Vec<ElekIntent> {
     out
 }
 
+/// Selection targets for a row; right-click outside the selection affects that row.
+fn clipboard_slots(view: &PresetView, loc: &PresetSlot) -> Vec<PresetSlot> {
+    let banks = view.bank_list();
+    let index = banks.iter().position(|b| *b == loc.bank).map(|b| b * BANK + loc.slot as usize - 1);
+    if index.is_some_and(|i| view.sel.contains(&i)) {
+        view.sel.iter().map(|&i| location(banks, i)).collect()
+    } else { vec![loc.clone()] }
+}
+
 fn copy_preset(st: &mut ElekState, loc: PresetSlot, out: &mut Vec<ElekIntent>, ctx: &egui::Context) {
-    let Some(src) = st.presets.origin(&loc) else {
-        st.presets.status = "Empty preset slot: nothing to copy".into();
-        return;
-    };
-    // A slow read must not leave the previous sound available for Paste.
+    let sources: Vec<_> = clipboard_slots(&st.presets, &loc).into_iter()
+        .filter_map(|loc| st.presets.origin(&loc).map(|src| (loc, src))).collect();
     st.proj.clear_sound_clipboard();
-    let names = &st.names;
-    let wait = st.presets.resolve_for_copy(&src, |key| names.contains_key(key), out);
-    st.presets.request_sound(&src, out);
-    st.presets.copy_pending = Some((loc, src, wait));
-    st.presets.status = "Loading preset for the sound clipboard…".into();
+    st.presets.copy_pending = None;
+    if sources.is_empty() {
+        st.presets.status = "No filled presets selected to copy".into();
+        return;
+    }
+    let mut pending = Vec::new();
+    for (loc, src) in sources {
+        let wait = st.presets.resolve_for_copy(&src, |key| st.names.contains_key(key), out);
+        st.presets.request_sound(&src, out);
+        pending.push((loc, src, wait));
+    }
+    st.presets.status = format!("Loading {} preset(s) for the sound clipboard…", pending.len());
+    st.presets.copy_pending = Some(pending);
     finish_copy(st, ctx);
 }
 
-/// Complete queued copies even when the user switches to the Pool page
-/// before the device finishes reading the preset.
+/// Wait for every source before publishing the batch; errors never expose a partial copy.
 pub(crate) fn finish_copy(st: &mut ElekState, ctx: &egui::Context) {
-    let Some((loc, src, wait)) = st.presets.copy_pending.clone() else { return; };
-    if let Some(key) = &wait {
-        match st.presets.sounds.get(key) {
-            Some(Some(Err(e))) => {
-                st.presets.status = format!("Could not copy preset: {e}");
+    let Some(pending) = st.presets.copy_pending.clone() else { return; };
+    let mut clips = Vec::new();
+    for (loc, src, wait) in pending {
+        let result = (|| {
+            if let Some(key) = &wait {
+                match st.presets.sounds.get(key) {
+                    Some(Some(Err(e))) => return Some(Err(e.clone())),
+                    Some(Some(Ok(_))) => {}
+                    _ => return None,
+                }
+            }
+            st.presets.preset(&src).map(|r| r.cloned())
+        })();
+        let Some(result) = result else { return; };
+        let preset = match result {
+            Ok(p) => p,
+            Err(e) => {
+                st.presets.status = format!("Could not copy preset {}:{:03}: {e}. Nothing copied", loc.bank, loc.slot);
                 st.presets.copy_pending = None;
                 return;
             }
-            Some(Some(Ok(_))) => {}
-            _ => return,
-        }
+        };
+        let cell = crate::device::library::SoundCell {
+            src: crate::device::library::SoundSrc::Preset { model: preset.model, data: preset.data },
+            name: None, tags: None,
+        };
+        let track_ok = st.project.as_deref().ok_or_else(|| "No project loaded".to_owned())
+            .and_then(|p| p.pool_sound_for_track(&cell).map(|_| ()));
+        clips.push(crate::ui::elek_project_view::PoolClip {
+            at: 0, cell, name: preset.sound.name, track_ok, carry: None, rest: Vec::new(),
+        });
     }
-    let Some(result) = st.presets.preset(&src) else { return; };
-    let preset = match result {
-        Ok(p) => p.clone(),
-        Err(e) => {
-            st.presets.status = format!("Could not copy preset: {e}");
-            st.presets.copy_pending = None;
-            return;
-        }
-    };
-    let cell = crate::device::library::SoundCell {
-        src: crate::device::library::SoundSrc::Preset { model: preset.model, data: preset.data },
-        name: None,
-        tags: None,
-    };
-    let track_ok = st.project.as_deref().ok_or_else(|| "No project loaded".to_owned())
-        .and_then(|p| p.pool_sound_for_track(&cell).map(|_| ()));
-    st.proj.set_pool_clip(crate::ui::elek_project_view::PoolClip {
-        at: 0, cell, name: preset.sound.name, track_ok, carry: None,
-    });
+    let n = clips.len();
+    st.proj.set_pool_clips(clips);
     st.presets.copy_pending = None;
-    let msg = format!("Copied preset {}:{:03}. Paste into Pool, Presets, or an audio track on Patterns; Push saves the edit", loc.bank, loc.slot);
+    let msg = format!("Copied {n} preset(s). Paste into Pool or Presets; Push saves the edit");
     ctx.copy_text(msg.clone());
     st.status = msg.clone();
     st.presets.status = msg;
 }
 
-fn paste_sound(st: &mut ElekState, loc: PresetSlot) {
-    let Some(clip) = st.proj.pool_clip.clone() else {
-        st.presets.status = "Copy a sound on Pool, Presets, or Patterns first".into();
-        return;
-    };
+fn clipboard_preset(st: &ElekState, clip: &crate::ui::elek_project_view::PoolClip) -> Result<Preset, String> {
     let mut preset = match &clip.cell.src {
         crate::device::library::SoundSrc::Preset { model, data } => {
-            let mut data = if let Some(name) = &clip.cell.name {
-                let mut d = data.clone();
+            let mut data = data.clone();
+            if data.len() < 28 { return Err("Copied sound is too short to be a preset".into()); }
+            if let Some(name) = &clip.cell.name {
                 let name = crate::device::patterns::clean_name(name);
-                d[12..28].fill(0);
-                d[12..12 + name.len()].copy_from_slice(name.as_bytes());
-                d
-            } else { data.clone() };
+                data[12..28].fill(0);
+                data[12..12 + name.len()].copy_from_slice(name.as_bytes());
+            }
             if let Some(tags) = clip.cell.tags { data[8..12].copy_from_slice(&tags.to_be_bytes()); }
-            crate::device::presets::Preset {
+            Preset {
                 model: *model, container: Vec::new(),
                 sound: crate::device::library::parse_sound(*model, 0, &data),
                 sample: crate::device::presets::sample_key(*model, &data).map(|key| (key, None)),
                 data,
             }
         }
-        _ => {
-            let Some(project) = st.project.as_deref() else {
-                st.presets.status = "Load the project the copied pool sound came from first".into();
-                return;
-            };
-            match project.export_preset(&clip.cell, &st.fills) {
-                Ok(p) => p,
-                Err(e) => { st.presets.status = e; return; }
-            }
-        }
+        _ => st.project.as_deref().ok_or("Load the project the copied sound came from first")?
+            .export_preset(&clip.cell, &st.fills)?,
     };
-    if let Some((key, path)) = &mut preset.sample {
-        *path = st.names.get(key).cloned();
+    if let Some((key, path)) = &mut preset.sample { *path = st.names.get(key).cloned(); }
+    Ok(preset)
+}
+
+fn paste_sound(st: &mut ElekState, loc: PresetSlot) {
+    let Some(clip) = &st.proj.pool_clip else {
+        st.presets.status = "Copy sounds on Pool, Presets, or Patterns first".into();
+        return;
+    };
+    let mut clips = clip.items();
+    let mut targets = clipboard_slots(&st.presets, &loc);
+    if targets.len() > 1 {
+        if clips.len() == 1 { clips = vec![clips[0].clone(); targets.len()]; }
+        else if targets.len() != clips.len() {
+            st.presets.status = format!("Select {} destination slots, or one starting slot. Nothing pasted", clips.len());
+            return;
+        }
+    } else {
+        if loc.slot as usize + clips.len() - 1 > BANK {
+            st.presets.status = "The copied sounds do not fit before the end of this bank. Nothing pasted".into();
+            return;
+        }
+        targets = (0..clips.len()).map(|i| PresetSlot::new(&loc.bank, loc.slot + i as u32)).collect();
     }
-    st.presets.stage(vec![PresetOp::Write(loc.clone(), preset)]);
-    st.presets.status = format!("{} pasted into preset {}:{:03}. Push on Presets to save it to +Drive", clip.desc(), loc.bank, loc.slot);
+    if st.presets.edit_locked() { st.presets.status = "Presets are busy. Nothing pasted".into(); return; }
+    let full = st.presets.full_ops();
+    if targets.iter().any(|loc| st.presets.locked(loc, full)) {
+        st.presets.status = "A destination preset is write-protected. Nothing pasted".into();
+        return;
+    }
+    let ops: Result<Vec<_>, String> = targets.iter().zip(&clips)
+        .map(|(loc, clip)| clipboard_preset(st, clip).map(|p| PresetOp::Write(loc.clone(), p))).collect();
+    match ops {
+        Err(e) => st.presets.status = format!("{e}. Nothing pasted"),
+        Ok(ops) => {
+            let n = ops.len();
+            st.presets.stage(ops);
+            let banks = st.presets.bank_list().to_vec();
+            st.presets.sel = targets.iter().filter_map(|loc| banks.iter().position(|b| *b == loc.bank)
+                .map(|b| b * BANK + loc.slot as usize - 1)).collect();
+            st.presets.status = format!("{n} sound(s) pasted. Push on Presets to save them to +Drive");
+        }
+    }
 }
 
 fn bank_strip(ui: &mut egui::Ui, bank: &mut String, banks: &[String]) -> bool {
@@ -1744,34 +1814,23 @@ fn pane(
                 }
                 resp.context_menu(|ui| {
                     ui.label(format!("Preset {bank}:{slot:03} · {name}"));
-                    if ui.add_enabled(*filled && present, egui::Button::new("Copy sound  (⌘C)")).clicked() {
+                    if ui.add_enabled(*filled && present, egui::Button::new(if selected && st.presets.sel.len() > 1 { "Copy selected sounds" } else { "Copy sound" }).shortcut_text("⌘C")).clicked() {
                         copy = Some(PresetSlot::new(&bank, *slot));
                         ui.close();
                     }
-                    if ui.add_enabled(can_edit && *filled, egui::Button::new("Rename…")).clicked() {
-                        rename = Some((PresetSlot::new(&bank, *slot), name.clone()));
-                        ui.close();
-                    }
-                    let copied = st.proj.pool_clip.as_ref().map(|c| c.desc());
+                    let copied = st.proj.pool_clip.as_ref().map(|c| if c.rest.is_empty() { c.desc() } else { format!("{} sounds", c.rest.len() + 1) });
                     if ui.add_enabled(can_edit && copied.is_some(), egui::Button::new(
-                        format!("Paste {}{}  (⌘V)", copied.as_deref().unwrap_or("sound"), if *filled { " over this preset" } else { " here" })
-                    )).clicked() {
+                        format!("Paste {}{}", copied.as_deref().unwrap_or("sound"), if *filled { " over this preset" } else { " here" })
+                    ).shortcut_text("⌘V")).clicked() {
                         paste = Some((side, index));
                         ui.close();
                     }
                     ui.separator();
+                    if ui.add_enabled(can_edit && *filled, egui::Button::new("Rename…")).clicked() {
+                        rename = Some((PresetSlot::new(&bank, *slot), name.clone()));
+                        ui.close();
+                    }
                     ui.add_enabled_ui(can_edit, |ui| {
-                        if ui
-                            .button(if selected {
-                                format!("Clear {} selected slot(s)", st.presets.sel.len())
-                            } else {
-                                "Clear".into()
-                            })
-                            .clicked()
-                        {
-                            edit = Some(Edit::Clear(index));
-                            ui.close();
-                        }
                         if ui.button("Insert empty slot here").clicked() {
                             edit = Some(Edit::InsertEmpty(index, 1));
                             ui.close();
@@ -1796,6 +1855,7 @@ fn pane(
                             ui.close();
                         }
                         if !st.presets.sel.is_empty() {
+                            ui.separator();
                             if ui
                                 .button(format!("Move {} selected here", st.presets.sel.len()))
                                 .clicked()
@@ -1805,11 +1865,11 @@ fn pane(
                                 ui.close();
                             }
                             if selected {
-                                for (label, dir) in [
-                                    ("Move selection up  (⌥↑)", -1),
-                                    ("Move selection down  (⌥↓)", 1),
+                                for (label, shortcut, dir) in [
+                                    ("Move selection up", "⌥↑", -1),
+                                    ("Move selection down", "⌥↓", 1),
                                 ] {
-                                    if ui.button(label).clicked() {
+                                    if ui.add(egui::Button::new(label).shortcut_text(shortcut)).clicked() {
                                         edit = Some(Edit::Nudge(dir));
                                         ui.close();
                                     }
@@ -1820,6 +1880,20 @@ fn pane(
                     ui.separator();
                     let gv = st.presets.group_view(&st.group_hues, any_drag, pitch);
                     sg_ui::slot_menu(ui, &gv, index, selected, &mut gacts);
+                    ui.separator();
+                    ui.add_enabled_ui(can_edit, |ui| {
+                        if ui
+                            .button(if selected {
+                                format!("Clear {} selected slot(s)", st.presets.sel.len())
+                            } else {
+                                "Clear".into()
+                            })
+                            .clicked()
+                        {
+                            edit = Some(Edit::Clear(index));
+                            ui.close();
+                        }
+                    });
                 });
             }
             if let Some((row0, r0)) = top_row {
@@ -1919,7 +1993,10 @@ fn pane(
     }
     if let Some(loc) = copy { copy_preset(st, loc, out, ui.ctx()); }
     if let Some((side, index)) = paste {
-        st.presets.select(banks, side, index, egui::Modifiers::NONE);
+        st.presets.active = side;
+        if !st.presets.sel.contains(&index) {
+            st.presets.select(banks, side, index, egui::Modifiers::NONE);
+        }
         paste_sound(st, location(banks, index));
     }
     if let Some(action) = edit {

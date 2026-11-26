@@ -211,9 +211,9 @@ pub struct App {
     /// A local job that made "Keep both" copies: once it finishes, select
     /// them and (for just one) open the inline rename on it.
     rename_after: Option<(u64, Vec<PathBuf>)>,
-    /// A pool sample's +Drive rename: `(job, key, new path)`, shown in the
-    /// pool once the device has done it.
-    pool_rename: Option<(u64, (u32, u32), String)>,
+    /// Pool sample +Drive renames by job: `(key, new path)`, shown in the
+    /// pool only after each rename succeeds.
+    pool_rename: std::collections::HashMap<u64, ((u32, u32), String)>,
     /// A +Drive rename of a file that may have a local copy: `(job, (hash,
     /// size), new device path)`. Once it lands, offer to rename the local file.
     relink_after: Option<(u64, (u32, u32), PathBuf)>,
@@ -382,7 +382,7 @@ pub struct App {
     changed_at: Option<std::time::Instant>,
     /// Slots (as read) taking an edited file: push once the last lands.
     update_push: std::collections::HashSet<u16>,
-    /// The right column shows the sample pool (SAMPLE POOL in its switch),
+    /// The right column shows the sample pool (RAM in its switch),
     /// not the Destination pane (FILES, or +DRIVE when that pane's active
     /// tab is on the device). See [`Self::pool_in_col`].
     dock_pool: bool,
@@ -427,6 +427,7 @@ pub struct App {
     group_hues: std::collections::BTreeMap<String, f32>,
     /// Preset groups per unit, like `pool_groups`.
     preset_groups: std::collections::BTreeMap<String, Vec<state::PresetGroup>>,
+    sound_groups: std::collections::BTreeMap<String, Vec<state::SoundGroup>>,
     parked_units: std::collections::HashMap<String, units::UnitCtx>,
     /// Applying a parked unit's events: leave the shown tabs alone.
     background: bool,
@@ -474,8 +475,17 @@ impl App {
             if presets.saved_groups.is_empty() {
                 self.preset_groups.remove(&unit);
             } else {
-                self.preset_groups.insert(unit, presets.saved_groups.clone());
+                self.preset_groups.insert(unit.clone(), presets.saved_groups.clone());
             }
+        }
+        let lib = &mut self.elek.lib;
+        if lib.groups_unit.as_ref() != Some(&unit) {
+            lib.set_saved_groups(unit.clone(), self.sound_groups.get(&unit).cloned().unwrap_or_default());
+        }
+        if std::mem::take(&mut lib.groups_dirty) {
+            let saved = lib.saved_groups();
+            if saved.is_empty() { self.sound_groups.remove(&unit); }
+            else { self.sound_groups.insert(unit, saved); }
         }
         // Hues are app-wide but `elek` is per unit: take edits back, and
         // hand the map to a unit that was parked when it changed.

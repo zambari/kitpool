@@ -96,6 +96,7 @@ impl ElekState {
                 self.lib.pool_sounds = Some(Ok(s));
             }
             self.lib.patterns_changed();
+            self.multi_rename = None;
             self.project = Some(p);
             return;
         }
@@ -134,6 +135,7 @@ impl ElekState {
         self.clip = None;
         self.group_drag = None;
         self.group_naming = None;
+        self.multi_rename = None;
         self.project = Some(p);
         self.match_groups();
     }
@@ -143,6 +145,7 @@ impl ElekState {
         self.sync_saved_groups();
         self.groups.clear();
         self.groups_from.clear();
+        self.multi_rename = None;
         self.project = None;
         // Copied patterns stay, to paste into the next project.
         let xclip = self.proj.xclip.take();

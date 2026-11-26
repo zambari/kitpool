@@ -239,6 +239,13 @@ fn rescan() -> bool {
     names.dedup();
     with(|u| {
         let changed = !u.scanned || u.present != names;
+        // A unit plugged back in: its worker's last word is about the link
+        // that broke ("port went away"). A parked unit gets no request to
+        // reconnect until it's shown, so that word would stay up as NOT
+        // CONNECTED; forget it, and let the next request tell.
+        for n in names.iter().filter(|n| !u.present.contains(n)) {
+            u.connection.remove(n);
+        }
         u.scanned = true;
         u.ports = (all_in, all_out);
         u.present = names;

@@ -125,6 +125,7 @@ pub fn frames(
             r.clone().on_hover_text(format!(
                 "Click: line the other pane up on its \"{name}\" group\nDrag: move the group"
             ));
+            r.context_menu(|ui| menu(ui, v, g, acts));
         }
         if tag_r.double_clicked() {
             acts.push(GroupAct::Rename(g));
@@ -133,10 +134,7 @@ pub fn frames(
             "Group \"{name}\": {} slot(s), moves as one.\nDrag the name or the frame's side to move it · ⌥ while dropping splits it in two (second half, new group of the same name) · click the frame's side to line the other pane up on its \"{name}\" · drop slots on its rows to add them · drag one out to remove it\nDouble-click to rename · right-click for more",
             span.len()
         ));
-        tag_r.context_menu(|ui| {
-            menu(ui, v, g, acts);
-            move_menus(ui, v, span.start / v.s.bank, &span.clone().collect::<Vec<_>>(), acts);
-        });
+        tag_r.context_menu(|ui| menu(ui, v, g, acts));
     }
 }
 
@@ -237,6 +235,7 @@ pub fn nav_row(
                         if resp.clicked() {
                             acts.push(GroupAct::GoTo(g));
                         }
+                        resp.context_menu(|ui| menu(ui, v, g, &mut acts));
                     }
                     // A group dragged over the row: the gap nearest the
                     // pointer among the bank's other groups is the target.
@@ -291,17 +290,22 @@ pub fn nav_row(
     acts
 }
 
-/// The group's right-click menu, on its name tab and inline in the slot
-/// menu of its rows.
+/// All whole-group commands, shared by the name tab, frame edges, jump
+/// buttons and group submenu on a slot row. Never use selection as targets.
 pub fn menu(ui: &mut egui::Ui, v: &GroupView, g: usize, acts: &mut Vec<GroupAct>) {
+    let Some(span) = v.s.group_spans().get(g).cloned() else { return };
+    ui.label(egui::RichText::new(format!("Group “{}” · {} slots", v.s.groups[g].name, span.len())).weak());
     if ui.button("Select group's slots").clicked() {
         acts.push(GroupAct::Select(g));
         ui.close();
     }
+    ui.separator();
     if ui.button("Rename group…").clicked() {
         acts.push(GroupAct::Rename(g));
         ui.close();
     }
+    hue_slider(ui, v, g, acts);
+    ui.separator();
     match v.s.compactable(g) {
         Ok(n) => {
             if ui
@@ -320,8 +324,24 @@ pub fn menu(ui: &mut egui::Ui, v: &GroupView, g: usize, acts: &mut Vec<GroupAct>
             ui.add_enabled(false, egui::Button::new("Compact group")).on_disabled_hover_text(why);
         }
     }
+    for (below, label) in [(false, "Add empty slot above"), (true, "Add empty slot below")] {
+        match v.s.plan_gap_beside(g, below) {
+            Ok(p) => {
+                if ui.button(label).on_hover_text(p.note).clicked() {
+                    acts.push(GroupAct::Gap(g, below));
+                    ui.close();
+                }
+            }
+            Err(why) => {
+                ui.add_enabled(false, egui::Button::new(label)).on_disabled_hover_text(why);
+            }
+        }
+    }
+    move_menus(ui, v, span.start / v.s.bank, &span.collect::<Vec<_>>(), acts);
+    ui.separator();
     spread_button(ui, v, g, acts);
     gather_button(ui, v, g, acts);
+    ui.separator();
     if ui
         .button("Dissolve group")
         .on_hover_text(format!("Forget the group; its {} stay where they are", v.s.noun))
@@ -331,8 +351,6 @@ pub fn menu(ui: &mut egui::Ui, v: &GroupView, g: usize, acts: &mut Vec<GroupAct>
         ui.close();
     }
     remove_empty_button(ui, v, acts);
-    ui.separator();
-    hue_slider(ui, v, g, acts);
 }
 
 /// "Remove N empty groups": every group on the page with nothing in it.
@@ -430,14 +448,16 @@ fn spread_button(ui: &mut egui::Ui, v: &GroupView, g: usize, acts: &mut Vec<Grou
     }
 }
 
-/// The group part of a slot's right-click menu: its group's menu, or
-/// "Group N slots…" for the selection (or this row); then "Move to group"
-/// in this bank and in the others. `selected`: the row is in the selection.
+/// Item/selection group commands stay at the top level. Whole-group
+/// commands use the same menu as the header, under a named submenu.
+/// `selected`: the row is in the selection.
 pub fn slot_menu(ui: &mut egui::Ui, v: &GroupView, slot: usize, selected: bool, acts: &mut Vec<GroupAct>) {
     let s = &v.s;
     let pick: Vec<usize> = if selected { s.sel.iter().copied().collect() } else { vec![slot] };
     if let Some(g) = s.group_at(slot) {
-        menu(ui, v, g, acts);
+        ui.menu_button(format!("Group “{}”", s.groups[g].name), |ui| menu(ui, v, g, acts))
+            .response
+            .on_hover_text("Actions for the whole group, including its empty slots");
     } else {
         let label = if pick.len() == 1 { "Make a group of this slot…".to_owned() } else { format!("Group {} slots…", pick.len()) };
         match s.groupable(&pick) {

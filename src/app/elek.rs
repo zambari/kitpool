@@ -261,17 +261,17 @@ impl App {
         // The docked pool lives in the right column, which this hides.
         self.elek.hide_files = false;
         self.status = "Project loaded: the sample pool is docked on the right. \
-            Switch the right column with Files / Sample pool / +Drive."
+            Switch the right column with Files / RAM / +Drive."
             .into();
     }
 
-    /// The right column shows the pool: SAMPLE POOL is picked, and the
+    /// The right column shows the pool: RAM is picked, and the
     /// centre is not the Samples page (which already is the pool).
     pub(super) fn pool_in_col(&self) -> bool {
         self.dock_pool && self.pool_offered()
     }
 
-    /// SAMPLE POOL is in the right column's switch: the device was talked
+    /// RAM is in the right column's switch: the device was talked
     /// to this run (or a project is loaded), and the centre is not the
     /// Samples page, which already is the pool.
     fn pool_offered(&self) -> bool {
@@ -436,7 +436,7 @@ impl App {
         self.elek_intents(intents);
     }
 
-    /// The right column: a FILES / SAMPLE POOL / +DRIVE switch above the
+    /// The right column: a FILES / RAM / +DRIVE switch above the
     /// Destination pane or the pool. FILES and +DRIVE are the same pane:
     /// +DRIVE is its tab on the device, FILES its local tabs.
     pub(super) fn show_dest_col(&mut self, ui: &mut egui::Ui) {
@@ -456,7 +456,7 @@ impl App {
             }
             if pool_offered
                 && ui
-                    .add(theme::column_switch("Sample pool", pool, pool && self.pool_focused, true))
+                    .add(theme::column_switch("RAM", pool, pool && self.pool_focused, true))
                     .on_hover_text("The sample slots of the project loaded on the device")
                     .clicked()
             {

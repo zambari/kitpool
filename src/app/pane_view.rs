@@ -620,21 +620,6 @@ impl App {
                                 }
                                 resp.context_menu(|ui| {
                                     if ui
-                                        .add_enabled(n_tabs > 1, egui::Button::new("Close this"))
-                                        .clicked()
-                                    {
-                                        close = Some(i);
-                                        ui.close();
-                                    }
-                                    if ui
-                                        .add_enabled(n_tabs > 1, egui::Button::new("Close others"))
-                                        .clicked()
-                                    {
-                                        close_others = Some(i);
-                                        ui.close();
-                                    }
-                                    ui.separator();
-                                    if ui
                                         .add_enabled(
                                             n_tabs > 1,
                                             egui::Button::new(format!("Move to {other_label}")),
@@ -646,6 +631,21 @@ impl App {
                                     }
                                     if ui.button(format!("Copy to {other_label}")).clicked() {
                                         to_other = Some((i, false));
+                                        ui.close();
+                                    }
+                                    ui.separator();
+                                    if ui
+                                        .add_enabled(n_tabs > 1, egui::Button::new("Close this"))
+                                        .clicked()
+                                    {
+                                        close = Some(i);
+                                        ui.close();
+                                    }
+                                    if ui
+                                        .add_enabled(n_tabs > 1, egui::Button::new("Close others"))
+                                        .clicked()
+                                    {
+                                        close_others = Some(i);
                                         ui.close();
                                     }
                                 });

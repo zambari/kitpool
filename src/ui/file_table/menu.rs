@@ -12,49 +12,7 @@ pub(super) fn row_menu(
 ) {
     // Rename and Open only make sense for one item.
     let single = tab.selected.len() <= 1;
-    let rename = ui.add_enabled(single, egui::Button::new("Rename"));
-    let rename = if single {
-        rename.on_hover_text("Rename in place (F2)")
-    } else {
-        rename.on_disabled_hover_text("Several items selected -- use the Multi-Rename Tool")
-    };
-    if rename.clicked() {
-        intents.push(Intent::BeginRename(entry.path.clone()));
-        ui.close();
-    }
-    if ui.button("Multi-Rename Tool…").on_hover_text("Find and replace across the selected names (⇧F2)").clicked() {
-        intents.push(Intent::BeginMultiRename);
-        ui.close();
-    }
     let local = !tab.device;
-    if local && entry.is_dir && ui.button("Calculate size").clicked() {
-        intents.push(Intent::WantSize(vec![entry.path.clone()]));
-        ui.close();
-    }
-    if local && entry.is_dir {
-        let dirs: Vec<PathBuf> = tab.effective_selection().into_iter().filter(|p| p.is_dir()).collect();
-        ui.menu_button("Make mono copy", |ui| {
-            use crate::audio::stats::Fold;
-            let opts: [(&str, &str, &[Fold]); 4] = [
-                ("Left + Right", "Each stereo file becomes two: \"name L\" and \"name R\"", &[Fold::Left, Fold::Right]),
-                ("Left only", "Keep the left channel of stereo files", &[Fold::Left]),
-                ("Right only", "Keep the right channel of stereo files", &[Fold::Right]),
-                ("Mix", "Average both channels of stereo files", &[Fold::Mix]),
-            ];
-            for (label, hint, folds) in opts {
-                if ui.button(label).on_hover_text(hint).clicked() {
-                    intents.push(Intent::MonoCopy { dirs: dirs.clone(), folds: folds.to_vec() });
-                    ui.close();
-                }
-            }
-        })
-        .response
-        .on_hover_text("Copy the folder's samples to \"<name> Mono\": mono files as they are, stereo ones folded down");
-    }
-    if local && entry.is_dir && ui.button("Add to favourites").clicked() {
-        intents.push(Intent::AddFavourite(entry.path.clone()));
-        ui.close();
-    }
     if single && entry.is_dir && ui.button("Open").clicked() {
         intents.push(Intent::Open(entry.path.clone()));
         ui.close();
@@ -78,6 +36,71 @@ pub(super) fn row_menu(
         intents.push(Intent::LoadFromDevice(entry.path.clone()));
         ui.close();
     }
+    if single && (entry.is_dir || !local || crate::fs_model::is_audio_path(&entry.path)) {
+        ui.separator();
+    }
+    let sel = tab.effective_selection();
+    if ui.add(egui::Button::new("Cut").shortcut_text("⌘X")).clicked() {
+        intents.push(Intent::Cut(sel.clone()));
+        ui.close();
+    }
+    if ui.add(egui::Button::new("Copy").shortcut_text("⌘C")).clicked() {
+        intents.push(Intent::Copy(sel.clone()));
+        ui.close();
+    }
+    // On a folder row, paste goes into that folder; on a file, alongside it.
+    let target = entry.is_dir.then(|| entry.path.clone());
+    paste_button(ui, cx, target, intents);
+    ui.separator();
+    let rename = ui.add_enabled(single, egui::Button::new("Rename").shortcut_text("F2"));
+    let rename = if single {
+        rename.on_hover_text("Rename in place (F2)")
+    } else {
+        rename.on_disabled_hover_text("Several items selected -- use the Multi-Rename Tool")
+    };
+    if rename.clicked() {
+        intents.push(Intent::BeginRename(entry.path.clone()));
+        ui.close();
+    }
+    if ui.add(egui::Button::new("Multi-Rename Tool…").shortcut_text("⇧F2")).on_hover_text("Find and replace across the selected names (⇧F2)").clicked() {
+        intents.push(Intent::BeginMultiRename);
+        ui.close();
+    }
+    if local && entry.is_dir {
+        let dirs: Vec<PathBuf> = tab.effective_selection().into_iter().filter(|p| p.is_dir()).collect();
+        ui.menu_button("Make mono copy", |ui| {
+            use crate::audio::stats::Fold;
+            let opts: [(&str, &str, &[Fold]); 4] = [
+                ("Left + Right", "Each stereo file becomes two: \"name L\" and \"name R\"", &[Fold::Left, Fold::Right]),
+                ("Left only", "Keep the left channel of stereo files", &[Fold::Left]),
+                ("Right only", "Keep the right channel of stereo files", &[Fold::Right]),
+                ("Mix", "Average both channels of stereo files", &[Fold::Mix]),
+            ];
+            for (label, hint, folds) in opts {
+                if ui.button(label).on_hover_text(hint).clicked() {
+                    intents.push(Intent::MonoCopy { dirs: dirs.clone(), folds: folds.to_vec() });
+                    ui.close();
+                }
+            }
+        })
+        .response
+        .on_hover_text("Copy the folder's samples to \"<name> Mono\": mono files as they are, stereo ones folded down");
+    }
+    // Next to the row, i.e. in the folder the row sits in.
+    if let Some(parent) = entry.path.parent() {
+        let base = entry.is_dir.then(|| entry.name.clone());
+        let sel = if local { tab.effective_selection() } else { Vec::new() };
+        if sel.len() == 1 {
+            new_folder_button(ui, cx, parent.to_path_buf(), base, Vec::new(), intents);
+            if ui.button("New folder with this item").on_hover_text("Move it into a new subfolder and rename it").clicked() {
+                intents.push(Intent::NewFolderWith { dir: parent.to_path_buf(), paths: sel, name: None });
+                ui.close();
+            }
+        } else {
+            new_folder_button(ui, cx, parent.to_path_buf(), base, sel, intents);
+        }
+    }
+    ui.separator();
     if linked {
         let reveal = if cfg!(target_os = "macos") { "Reveal local copy in Finder" } else { "Show local copy in Explorer" };
         if ui.button(reveal).clicked() {
@@ -102,34 +125,20 @@ pub(super) fn row_menu(
             }
         }
     }
-    // Next to the row, i.e. in the folder the row sits in.
-    if let Some(parent) = entry.path.parent() {
-        let base = entry.is_dir.then(|| entry.name.clone());
-        let sel = if local { tab.effective_selection() } else { Vec::new() };
-        if sel.len() == 1 {
-            new_folder_button(ui, cx, parent.to_path_buf(), base, Vec::new(), intents);
-            if ui.button("New folder with this item").on_hover_text("Move it into a new subfolder and rename it").clicked() {
-                intents.push(Intent::NewFolderWith { dir: parent.to_path_buf(), paths: sel, name: None });
-                ui.close();
-            }
-        } else {
-            new_folder_button(ui, cx, parent.to_path_buf(), base, sel, intents);
-        }
-    }
-    ui.separator();
-    let sel = tab.effective_selection();
-    if ui.button("Cut").clicked() {
-        intents.push(Intent::Cut(sel.clone()));
+    if local && entry.is_dir && ui.button("Calculate size").clicked() {
+        intents.push(Intent::WantSize(vec![entry.path.clone()]));
         ui.close();
     }
-    if ui.button("Copy").clicked() {
-        intents.push(Intent::Copy(sel.clone()));
+    if local && entry.is_dir && ui.button("Add to favourites").clicked() {
+        intents.push(Intent::AddFavourite(entry.path.clone()));
         ui.close();
     }
-    // On a folder row, paste goes into that folder; on a file, alongside it.
-    let target = entry.is_dir.then(|| entry.path.clone());
-    paste_button(ui, cx, target, intents);
-    ui.separator();
+    if local {
+        reveal_button(ui, entry.path.clone(), intents);
+    }
+    if local || linked {
+        ui.separator();
+    }
     // Only meaningful with several files selected.
     let files: Vec<PathBuf> =
         if local { sel.iter().filter(|p| !p.is_dir()).cloned().collect() } else { Vec::new() };
@@ -142,10 +151,6 @@ pub(super) fn row_menu(
             intents.push(Intent::RemoveDuplicates(files));
             ui.close();
         }
-        ui.separator();
-    }
-    if local {
-        reveal_button(ui, entry.path.clone(), intents);
         ui.separator();
     }
     let bin = if local { "Trash" } else { "/trash" };
@@ -162,7 +167,7 @@ pub(super) fn row_menu(
         ui.close();
     }
     if !local {
-        let label = if sel.len() > 1 { format!("Delete {} items now", sel.len()) } else { "Delete now".to_owned() };
+        let label = if sel.len() > 1 { format!("Delete {} items permanently", sel.len()) } else { "Delete permanently".to_owned() };
         if ui
             .button(egui::RichText::new(label).color(ui.visuals().error_fg_color))
             .on_hover_text("Delete from the device right away, without going through /trash (⌥⌘⌫)")
@@ -192,7 +197,7 @@ pub(super) fn paste_button(
         (None, _) => "Paste".to_owned(),
     };
     if ui
-        .add_enabled(cx.paste_label().is_some(), egui::Button::new(label))
+        .add_enabled(cx.paste_label().is_some(), egui::Button::new(label).shortcut_text("⌘V"))
         .clicked()
     {
         intents.push(Intent::Paste(target));

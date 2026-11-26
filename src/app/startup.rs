@@ -113,6 +113,7 @@ impl App {
                 .as_ref()
                 .map(|s| s.group_hues.iter().map(|(k, &h)| (crate::ui::elek_view::hue_key(k), h)).collect())
                 .unwrap_or_default(),
+            sound_groups: saved.as_ref().map(|s| s.sound_groups.clone()).unwrap_or_default(),
             preset_groups: saved.as_ref().map(|s| s.preset_groups.clone()).unwrap_or_default(),
             parked_units: Default::default(),
             background: false,
@@ -220,7 +221,7 @@ impl App {
             undo: Vec::new(),
             undo_jobs: Default::default(),
             rename_after: None,
-            pool_rename: None,
+            pool_rename: Default::default(),
             relink_after: None,
             local_rename_pending: None,
             slot_download_pending: None,
@@ -303,6 +304,7 @@ impl App {
             pool_groups: self.pool_groups.clone(),
             group_hues: self.group_hues.clone(),
             preset_groups: self.preset_groups.clone(),
+            sound_groups: self.sound_groups.clone(),
         }
     }
 }

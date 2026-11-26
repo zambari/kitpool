@@ -116,7 +116,7 @@ pub fn confirm_trash(
     let bin = if device { "/trash" } else { "Trash" };
     let verb = |what: &str| {
         if permanent {
-            format!("Delete {what} now?")
+            format!("Delete {what} permanently?")
         } else {
             format!("Move {what} to {bin}?")
         }
@@ -162,7 +162,7 @@ pub fn confirm_trash(
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
-                    .button(RichText::new(if permanent { "Delete".to_owned() } else { format!("Move to {bin}") }).color(ui.visuals().error_fg_color))
+                    .button(RichText::new(if permanent { "Delete permanently".to_owned() } else { format!("Move to {bin}") }).color(ui.visuals().error_fg_color))
                     .on_hover_text(if permanent { "" } else { "↩" })
                     .clicked()
                 {

@@ -14,6 +14,17 @@ const HIT_OLD: Color32 = Color32::from_rgb(230, 110, 100);
 const HIT_NEW: Color32 = Color32::from_rgb(110, 220, 130);
 
 pub fn show(ui: &mut Ui, mr: &mut MultiRename, pane_focused: bool) -> Option<Outcome> {
+    // Temporary egui data is shared by the RAM and file-pane tools, and is
+    // never serialized into app settings.
+    let session_id = egui::Id::unique("multi_rename_session_text");
+    if !mr.session_loaded {
+        if let Some((find, replace)) = ui.ctx().data(|d| d.get_temp::<(String, String)>(session_id)) {
+            mr.find = find;
+            mr.replace = replace;
+        }
+        mr.session_loaded = true;
+    }
+    let previous = (mr.find.clone(), mr.replace.clone());
     let mut out = None;
     let rows = mr.preview();
     let n_change = rows.iter().filter(|r| r.status == Status::Ok).count();
@@ -154,6 +165,11 @@ pub fn show(ui: &mut Ui, mr: &mut MultiRename, pane_focused: bool) -> Option<Out
         } else if enter && can_apply {
             out = Some(Outcome::Apply(Vec::new()));
         }
+    }
+
+    let current = (mr.find.clone(), mr.replace.clone());
+    if current != previous {
+        ui.ctx().data_mut(|d| d.insert_temp(session_id, current));
     }
 
     match out {

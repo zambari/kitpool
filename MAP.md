@@ -56,7 +56,7 @@ control→function tables are in [MAP_full.md](MAP_full.md) (not maintained).
 | Patterns page | 128 patterns, 16 per bank A–H. | `ElekPage::Project`, `device/elek/patterns.rs` |
 | Presets page | Saved sounds on +Drive, `/soundbanks/<bank>/<slot>`. Not part of the project. | `ElekPage::Presets` |
 | Pool page | The project's 128 **sound pool** sounds (not the sample pool). Formerly "Sounds". | `ElekPage::Library`, `ui/elek_library_view.rs` |
-| **docked pool** | Sample pool shown as the right column (SAMPLE POOL). | `App::dock_elek`, `show_dest_col` |
+| **docked pool** | Sample pool shown as the right column (RAM in its switch). | `App::dock_elek`, `show_dest_col` |
 | **push** / **read back** | Write edits into device memory / verify them by reading again. | `ElekCmd`, `Conn::push_project`, `app/elek/readback.rs` |
 | **SliceKit** | Editor slot collecting slices (K). Code says `kit`/`is_kit`; the Digitakt's own "kit" (a pattern's sound set) is a different thing. | `app/kit.rs`, `editor/clip.rs` |
 | **grid kit** | SliceKit on 4/8/16 equal slots; only while the marker padlock is locked. | `editor/grid.rs` |
@@ -133,7 +133,16 @@ control→function tables are in [MAP_full.md](MAP_full.md) (not maintained).
   when there's no room. Presets default to insert (they're copies, order is
   free). ⌥/⌃ swaps in place in both. Neither list uses the shared target
   for the drop itself: both build a `SlotDrop` in `slot_groups::ui::landing`
-  and work it out with `Slots::plan`, which knows groups.
+  and work it out with `Slots::plan`, which knows groups. There the push
+  carries loose empty slots along (gaps are information): it ends on a slot
+  the drag lifted, or at the bank's edge, dropping the empties furthest
+  from the landing (`plan_picked`'s `place`).
+  RAM right-click "Insert empty slot here", "Remove this empty slot" and
+  "Clear and pull others up" go through `Slots::plan_insert_empty` /
+  `plan_close_gaps` (also the group menu's "Add empty slot above/below"):
+  the rest of the bank shifts as one, **gaps included** (empty slots are
+  information), using up or freeing a slot at the bank's end; groups move
+  whole. (Presets' insert/close still use plain `slot_list`.)
 - **Slot groups** are one engine for the RAM and Presets pages
   (`ui/slot_groups.rs`: `Slots` plans over a page's `order`, `GroupHost` is
   how a page applies a `Plan`; `slot_groups/ui.rs` draws frames, minimap,
@@ -160,9 +169,12 @@ control→function tables are in [MAP_full.md](MAP_full.md) (not maintained).
   (MIDI port name) by +Drive hash in `AppState::pool_groups`, synced by
   `App::sync_pool_groups`; a project gets a group back when those samples
   sit packed in one bank. Empty members save as key `(0, 0)` plus the start slot (`PoolGroup::at`).
-  The group right-click menu is `slot_groups::ui::menu`, shown on the name tab
-  and, inline, on any of the group's rows (`slot_groups::ui::slot_menu`), so both offer the same actions;
-  both also get "Move to group in this/other bank" (`move_menus`: the tab moves all the group's slots).
+  The group right-click menu is `slot_groups::ui::menu`, shown directly on the
+  name tab, frame edges and jump buttons, and under `Group “name”` on a member
+  row (`slot_groups::ui::slot_menu`). All use the same whole-group actions,
+  including "Move to group in this/other bank" with every member, empties included.
+  A row's top-level "Move to group" commands still target the clicked slot or
+  selection; those item commands are separate from the whole-group submenu.
   A group whose slots are all selected gets a solid frame instead of dashed (`frames`).
   "Group N slots…" (`Slots::new_group`) takes any ungrouped picks in one bank, gaps allowed, and is born
   compact: the picked samples pack into the run that moves them least using only picked or loose empty
@@ -210,7 +222,7 @@ control→function tables are in [MAP_full.md](MAP_full.md) (not maintained).
   Group colour is per *name*, app-wide (all units, banks, projects): a hue
   offset -1..1 (±180° from device yellow) in `AppState::group_hues`, keyed
   by `hue_key` (trimmed, lowercase, like every group name comparison), set by
-  the slider at the bottom of the group menus (`hue_slider`), painted via
+  the slider beside the rename section of group menus (`hue_slider`), painted via
   `slot_groups::group_color` / `theme::hue_shift`. `elek` is per unit, so
   `App::sync_pool_groups` copies the map in and takes edits back (`hues_dirty`).
   Right-click ▸ "Move to group in this bank" / "…in other bank" is `plan_join`
@@ -228,7 +240,21 @@ control→function tables are in [MAP_full.md](MAP_full.md) (not maintained).
 - Device status and copy/paste feedback goes to the bottom status bar, not to
   banners above lists.
 
+- RAM multi-rename: right-click “Multi-Rename on +Drive…” or ⇧F2 uses
+  `elek_view/dialogs.rs::begin_multi_rename` and the shared `rename_view` preview.
+  Empty slots are skipped and duplicate paths renamed once. Each +Drive job
+  updates its RAM name only on success (`App::pool_rename`, tracked per unit);
+  local filenames stay unchanged. The device checks destination collisions
+  against its full folder listing before each rename.
+
 ## Styling
+
+Context menus follow the same section order where applicable: use/open,
+Cut/Copy/Paste, rename and arrangement, locate and transfer, wider bank/project
+operations, then clearing/deletion. Keep clipboard commands together and use
+`Button::shortcut_text` for shortcuts. Group submenus and headers share
+`slot_groups::ui::menu`; do not append whole-group commands at individual call
+sites. Keep item/selection targets separate from whole-group targets.
 
 Everything shared is in `src/ui/theme.rs`: palette, accent, device yellow and
 wash/frame/dimming, OLED font and colours, shared widgets (`pane_tab`,
@@ -241,3 +267,18 @@ specific colours and metrics are consts at the top of the view file.
 User-facing behaviour: [README.md](README.md). Device format research:
 `project_discovery.md`, `project_management_discovery.md` (local, gitignored).
 Folders the app writes to: `src/paths.rs`. What survives restart: `src/state.rs`.
+
+
+- **Sound Pool multi-selection and groups**: `ui/elek_library_view.rs`
+  uses `slot_list::click` (Shift range / command toggle) and the shared
+  `slot_groups` planner through `elek_library_view/groups.rs`. Batch moves,
+  copies, clearing and tag toggles act on the selection; tag edits apply the
+  changed bits while keeping each sound's other tags. Pool batch paste replaces
+  an equal-size selection or consecutive slots from one destination
+  (`paste_pool_batch`; missing source samples are confirmed once for the
+  whole batch, `SoundPasteTarget::PoolBatch`). The shared
+  clipboard exposes the first sound to Presets/Patterns; the Pool batch is local
+  to the loaded project. Group menus are the shared menus, on group buttons and
+  member rows. Groups and cells undo together. Sound groups are session-local;
+  reload keeps groups whose members still match at their slots. Empty members
+  remain containers, and clearing sounds keeps their group.
