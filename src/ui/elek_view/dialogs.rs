@@ -189,10 +189,12 @@ fn confirm_push(ctx: &egui::Context, pool: usize, patterns: usize, sounds: usize
         }
         if sounds > 0 && !whole {
             ui.add_space(4.0);
-            ui.colored_label(
-                Color32::from_rgb(230, 120, 90),
-                "Sound pool editing is experimental. Moved sounds take their sound locks with them in every pattern; \
-                 locks on a sound you deleted are removed. Kit tracks keep their own copies of sounds and don't change.",
+            ui.label(
+                RichText::new(
+                    "Moved sounds take their sound locks with them in every pattern; \
+                     locks on a sound you deleted are removed. Kit tracks keep their own copies of sounds and don't change.",
+                )
+                .weak(),
             );
         }
         if patterns > 0 && !whole {
