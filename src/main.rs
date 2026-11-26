@@ -23,6 +23,18 @@ mod tab;
 mod ui;
 
 fn main() -> eframe::Result {
+    // Panics otherwise go to stderr only, which is gone when the app was
+    // started from Finder or the relaunch button: keep them in the log.
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let thread = std::thread::current();
+        let bt = std::backtrace::Backtrace::force_capture();
+        crate::log::line(format!(
+            "PANIC in thread {:?}: {info}\n{bt}",
+            thread.name().unwrap_or("unnamed")
+        ));
+        default_hook(info);
+    }));
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1560.0, 880.0])

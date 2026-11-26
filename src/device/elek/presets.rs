@@ -61,7 +61,7 @@ impl Preset {
     /// Validate an importable container before any edit can be staged.
     pub(super) fn from_container(model: Model, loc: &PresetSlot, container: Vec<u8>) -> Result<Self, String> {
         let data = decode_sound(model, &container)?.to_vec();
-        preset_container(model, loc, &data, &container)?;
+        preset_container(model, loc, &data, &container, true)?;
         Ok(Self {
             model,
             sound: library::parse_sound(model, loc.slot as usize, &data),
@@ -431,6 +431,7 @@ impl Conn {
     pub(super) fn push_presets(
         &mut self,
         plan: &PresetPush,
+        wrote: &std::cell::Cell<bool>,
         progress: &impl Fn(&str, usize, usize),
     ) -> R<()> {
         let model = self.model()?;
@@ -449,7 +450,7 @@ impl Conn {
             }
             if let Some(expected) = expected {
                 let container = self.preset_data(&loc.path(), &|_| {})?;
-                if decode_sound(model, &container).map_err(Fail::Refused)? != expected {
+                if !same_sound(model, decode_sound(model, &container).map_err(Fail::Refused)?, expected) {
                     return refused(format!(
                         "Preset {}:{:03} changed on device. Reload presets before pushing.",
                         loc.bank, loc.slot
@@ -464,17 +465,20 @@ impl Conn {
         for op in &plan.ops {
             if let PresetOp::Write(loc, preset) = op {
                 if preset.model != model { return refused("Copied preset belongs to another device model"); }
-                let reference = if preset.container.is_empty() {
+                let own = !preset.container.is_empty();
+                let reference = if !own {
                     if template.is_none() {
                         template = Some(self.preset_template(model, be32(&preset.data, 4).unwrap_or(u32::MAX))?);
                     }
                     template.as_ref().unwrap()
                 } else { &preset.container };
-                writes.push(Some(preset_container(model, loc, &preset.data, reference).map_err(Fail::Refused)?));
+                writes.push(Some(preset_container(model, loc, &preset.data, reference, own).map_err(Fail::Refused)?));
             } else { writes.push(None); }
         }
         for (op, write) in plan.ops.iter().zip(&writes) {
             progress("Pushing presets to +Drive", done, total);
+            // From here on the device may change: a failure can't be retried blindly.
+            wrote.set(true);
             if let PresetOp::Write(loc, _) = op {
                 self.write_preset(loc, write.as_ref().unwrap())?;
                 done += 1;
@@ -511,7 +515,7 @@ impl Conn {
             if let Some(expected) = expected {
                 let container = self.preset_data(&loc.path(), &|_| {})?;
                 let got = decode_sound(model, &container).map_err(Fail::Refused)?;
-                if got != expected {
+                if !same_sound(model, got, expected) {
                     log_diff(loc, expected, got);
                     return refused(
                         "Preset read-back differs from the staged edits. Reload presets to see what is on the device.",
@@ -523,6 +527,17 @@ impl Conn {
         progress(if plan.verify { "Presets pushed and verified" } else { "Live presets saved" }, total, total);
         Ok(())
     }
+}
+
+/// A saved preset as the device keeps it: equal apart from the sample's
+/// +Drive inode, which the device rewrites when it saves a preset (sent
+/// `0x01004422`, read back `0x01000000`). The sample is still named by its
+/// hash and size, which must match.
+fn same_sound(model: Model, got: &[u8], sent: &[u8]) -> bool {
+    if got.len() != sent.len() { return false; }
+    let inode = sample_id_at(model, sent).map(|at| at..at + 4);
+    got.iter().zip(sent).enumerate()
+        .all(|(i, (a, b))| a == b || inode.as_ref().is_some_and(|r| r.contains(&i)))
 }
 
 /// Which bytes a read-back changed, so a refused verify can be diagnosed.
@@ -582,26 +597,39 @@ fn preset_crc(data: &[u8]) -> u32 {
     !crc
 }
 
-fn preset_container(model: Model, loc: &PresetSlot, data: &[u8], template: &[u8]) -> Result<(Vec<u8>, Vec<u8>), String> {
+/// Rebuild `template` (a container read from this device) around `data`,
+/// for `loc`. Older sounds (Digitakt II v0: 299 bytes) sit in a payload sized
+/// like the current version, followed by bytes this app doesn't interpret.
+/// `own_tail`: `template` is this preset's own container, so those trailing
+/// bytes are kept as they are; a foreign template must have none.
+fn preset_container(model: Model, loc: &PresetSlot, data: &[u8], template: &[u8], own_tail: bool) -> Result<(Vec<u8>, Vec<u8>), String> {
     let old = decode_sound(model, template)?;
+    let tail = template.get(36 + old.len()..template.len().saturating_sub(12)).unwrap_or(&[]);
     let version = be32(data, 4).ok_or("Missing sound version")?;
     if !valid_bank(&loc.bank) || !(1..=256).contains(&loc.slot)
         || be32(template, 0) != Some(0xac11d303) || template.get(4) != Some(&2)
         || template.get(29..31) != Some(&[0, 12][..]) || template.get(36..).is_none_or(|d| old.as_ptr() != d.as_ptr())
         || old.len() != data.len() || be32(old, 4) != Some(version)
         || sound_sizeof(model, version) != Some(data.len()) || be32(data, 0) != Some(MAGIC)
-        || template.len() != 36 + old.len() + 12
-        || be32(template, 25) != Some((old.len() + 5) as u32)
+        || template.len() < 36 + old.len() + 12
+        || be32(template, 25) != Some((old.len() + tail.len() + 5) as u32)
         || be32(template, template.len() - 12) != Some(preset_crc(&template[31..template.len() - 12]))
         || be32(template, template.len() - 4) != Some(0xaaa1daaa) {
-        return Err("Unsupported preset container; nothing written".into());
+        return Err(format!(
+            "Unsupported preset container (sound v{version}, {} of {} payload bytes); nothing written",
+            old.len(), old.len() + tail.len()
+        ));
+    }
+    if !tail.is_empty() && !own_tail {
+        return Err(format!("A sound v{version} preset can only be rewritten from its own saved container; nothing written"));
     }
     let mut body = template[..36].to_vec();
     let index = (loc.bank.as_bytes()[0] - b'A') as u32 * 256 + loc.slot - 1;
     body[21..25].copy_from_slice(&index.to_be_bytes());
-    let size = (data.len() + 5) as u32;
+    let size = (data.len() + tail.len() + 5) as u32;
     body[25..29].copy_from_slice(&size.to_be_bytes());
     body.extend_from_slice(data);
+    body.extend_from_slice(tail);
     let mut footer = Vec::new();
     footer.extend_from_slice(&preset_crc(&body[31..]).to_be_bytes());
     footer.extend_from_slice(&size.to_be_bytes());

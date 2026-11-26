@@ -1169,7 +1169,9 @@ pub enum ElekEv {
     PresetFileSaved(Result<PathBuf, String>),
     PresetFileLoaded(Result<preset_file::LoadedPresets, String>),
     PresetPushProgress { label: String, done: usize, total: usize },
-    PresetsPushed(Result<(), String>),
+    /// Push result, and whether any edit was sent before it ended: a
+    /// failure with nothing sent can simply be pushed again.
+    PresetsPushed(Result<(), String>, bool),
     SoundProgress { done: usize, total: usize },
     Sounds(Result<Vec<library::PoolSound>, String>),
     Progress {
@@ -1398,8 +1400,20 @@ impl Conn {
         if m != want {
             return refused(format!("this project is for the {}, but the device is a {}", want.name(), m.name()));
         }
-        if !force && self.read_settings(m)? != settings {
-            return Ok(false);
+        if !force {
+            let now = self.read_settings(m)?;
+            if now != settings {
+                let diffs: Vec<String> = settings.iter().zip(&now).enumerate()
+                    .filter(|(_, (a, b))| a != b)
+                    .map(|(i, (a, b))| format!("{i}:{a:02x}->{b:02x}"))
+                    .collect();
+                crate::log::line(format!(
+                    "elek: settings differ from the read ({} vs {} bytes, {} differ): {}",
+                    settings.len(), now.len(), diffs.len(),
+                    diffs.iter().take(40).cloned().collect::<Vec<_>>().join(" ")
+                ));
+                return Ok(false);
+            }
         }
         for (i, msg) in msgs.iter().enumerate() {
             self.send_sysex(msg)?;
@@ -1442,14 +1456,15 @@ impl Worker {
                 em.send(Ev::Elek(ElekEv::PresetFileLoaded(result)));
             }
             ElekCmd::PushPresets(plan) => {
-                let result = self.with_conn(|c| c.push_presets(&plan, &|label, done, total| {
+                let wrote = std::cell::Cell::new(false);
+                let result = self.with_conn(|c| c.push_presets(&plan, &wrote, &|label, done, total| {
                     em.send(Ev::Elek(ElekEv::PresetPushProgress { label: label.into(), done, total }));
                 }));
                 match &result {
                     Ok(()) => crate::log::line(format!("presets: pushed {} op(s), verify {}", plan.ops.len(), plan.verify)),
-                    Err(e) => crate::log::line(format!("presets: push of {} op(s) failed: {e}", plan.ops.len())),
+                    Err(e) => crate::log::line(format!("presets: push of {} op(s) failed{}: {e}", plan.ops.len(), if wrote.get() { " after sending edits" } else { " before sending anything" })),
                 }
-                em.send(Ev::Elek(ElekEv::PresetsPushed(result)));
+                em.send(Ev::Elek(ElekEv::PresetsPushed(result, wrote.get())));
             }
             ElekCmd::ReadSounds => {
                 let r = self.read_sound_pool();

@@ -75,6 +75,19 @@ control→function tables are in [MAP_full.md](MAP_full.md) (not maintained).
 - **Saved projects on +Drive are never written** (`proto::FORBIDDEN`). Only
   device memory is pushed. Preset uploads are limited to exact preset paths
   (`allowed_write`).
+- **The device rewrites a preset's sample inode on save** (low 16 bits come
+  back zero). Preset read-back compares with `same_sound`, which skips the
+  inode; hash and size still have to match.
+- **Old presets (Digitakt II sound v0) carry a payload tail.** The container
+  payload is 1109 bytes like v3, but `decode_sound` returns only the 299-byte
+  v0 sound; `preset_container` keeps the rest verbatim when rebuilding from
+  the preset's own container, and refuses a foreign template with a tail.
+- **Presets status line is logged** (`presets: …` in `KitPool.log`, once per
+  change, at the end of `elek_presets_view::show`), so refusals can be traced.
+- **Locked presets are refused at staging** (`PresetView::stage_with`): any
+  edit that would change a slot locked on the device (by the device's slots,
+  not what's shown) is rolled back with a status. Locks only come from listed
+  presets, so a truly empty slot is never locked.
 - **Device off ≠ unplugged.** Clicking the shown unit's name in its device row
   closes its ports so a DAW can use it (`Presence::Off`, per unit); unplugging
   folds the same panels. Reconnect may be a different unit (`App::last_unit`),

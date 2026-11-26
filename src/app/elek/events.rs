@@ -62,6 +62,7 @@ impl App {
                 st.presets.status = match result {
                     Ok(path) => {
                         crate::log::line(format!("presets: backup saved to {}", path.display()));
+                        reveal(&path);
                         format!("Importable preset backup saved to {}", path.display())
                     }
                     Err(e) => {
@@ -84,8 +85,8 @@ impl App {
             ElekEv::PresetPushProgress { label, done, total } => {
                 st.presets.pushing = Some((label, done, total));
             }
-            ElekEv::PresetsPushed(result) => {
-                st.presets.pushed(result);
+            ElekEv::PresetsPushed(result, wrote) => {
+                st.presets.pushed(result, wrote);
             }
             ElekEv::Projects(r) => st.projects = Some(r),
             ElekEv::SoundProgress { done, total } => st.lib.sound_progress = Some((done, total)),

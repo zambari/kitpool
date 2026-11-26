@@ -8,6 +8,23 @@ use crate::device::presets::{Preset, PresetEntry, PresetOp, PresetPush, PresetSl
 use crate::ui::elek_view::{self, ElekIntent, ElekState};
 use crate::ui::slot_list::{self, DropTarget};
 use crate::ui::sound_tags;
+use crate::ui::elek_library_view::{machine_text, src_detail};
+
+/// Width of the MACHINE column (matches the pool view).
+const MACHINE_W: f32 = 70.0;
+
+/// MACHINE cell tooltip: sample and pitch first, then the whole SRC page.
+fn machine_tip(preset: &Preset) -> String {
+    let sample = match &preset.sample {
+        Some((_, Some(path))) => path.rsplit('/').next().unwrap_or(path).to_string(),
+        Some((_, None)) => "not found on +Drive".into(),
+        None => "none".into(),
+    };
+    let tune = preset.sound.params.iter()
+        .find(|q| q.name.trim_end_matches('?') == "TUNE")
+        .map_or_else(|| "—".into(), |q| q.text.clone());
+    format!("Sample: {sample}\nTune: {tune}\n\n{}", src_detail(&preset.sound))
+}
 use crate::ui::theme::{self, OLED, OLED_BG, OLED_DIM, OLED_HOVER, oled_font};
 use crate::ui::slot_groups::{self as sgroups, ui as sg_ui, Group, GroupHost};
 use egui::{RichText, Sense, Stroke};
@@ -53,7 +70,11 @@ pub struct PresetView {
     pub dumping: Option<(String, usize, usize)>,
     pub importing: bool,
     pub status: String,
+    /// The last `status` written to the log, so each message is logged once.
+    logged_status: String,
     pub push_failed: bool,
+    /// The last push failed before writing anything: show why, Push stays on.
+    push_retry: bool,
     loading: (usize, usize),
     pub read_progress: f32,
     confirm_reload: bool,
@@ -156,7 +177,7 @@ impl PresetView {
         for (loc, preset) in loaded.sounds {
             self.sounds.insert((loc.bank, loc.slot), Some(Ok(preset)));
         }
-        self.stage(loaded.ops);
+        if !self.stage(loaded.ops) { return; }
         self.status = format!("Preset backup loaded: {} changed slot(s), including restored empty slots. Review, then Push to device; Undo reverts the load", self.changed());
     }
 
@@ -390,20 +411,41 @@ impl PresetView {
         }
     }
 
-    fn stage(&mut self, ops: Vec<PresetOp>) {
-        self.stage_with(ops, None);
+    fn stage(&mut self, ops: Vec<PresetOp>) -> bool {
+        self.stage_with(ops, None)
     }
 
     /// Stages `ops` and (when given) the groups after them, as one undo step.
-    fn stage_with(&mut self, ops: Vec<PresetOp>, groups: Option<Vec<Group>>) {
+    /// `false`: refused because it touches a preset locked on the device.
+    fn stage_with(&mut self, ops: Vec<PresetOp>, groups: Option<Vec<Group>>) -> bool {
         let regroup = groups.as_ref().is_some_and(|g| *g != self.groups);
         if ops.is_empty() && !regroup {
-            return;
+            return true;
         }
         // Live needs no preset data for moves, swaps or clears; a manual push
         // reads what it checks through `request_push_data`.
-        self.undo.push((self.ops.len(), self.groups.clone(), self.sel.clone(), self.cursor));
+        let before = self.ops.len();
         self.ops.extend(ops);
+        // Refuse here what the device would refuse at push time: a preset
+        // locked there can't be moved, swapped, cleared or overwritten. Its
+        // slot may look empty when a staged edit moved it away, so check
+        // the device's slots, not what's shown.
+        let full = self.full_ops();
+        let blocked: Vec<String> = self.edits().into_iter()
+            .filter(|(loc, src)| self.locked(loc, full) && self.base(loc) != *src)
+            .map(|(loc, _)| format!("{}:{:03}", loc.bank, loc.slot))
+            .collect();
+        if !blocked.is_empty() {
+            self.ops.truncate(before);
+            self.status = format!(
+                "Not changed: this would move, clear or overwrite {} locked on the device ({}). Unlock it there and reload presets, or leave it out.",
+                if blocked.len() == 1 { "a preset" } else { "presets" },
+                blocked.join(", ")
+            );
+            self.refresh_slots();
+            return false;
+        }
+        self.undo.push((before, self.groups.clone(), self.sel.clone(), self.cursor));
         if let Some(g) = groups {
             self.groups = g;
         }
@@ -415,6 +457,7 @@ impl PresetView {
         self.status.clear();
         self.refresh_slots();
         self.groups_changed();
+        true
     }
 
     fn edit_tags(&mut self, loc: PresetSlot, tags: u32) {
@@ -428,7 +471,7 @@ impl PresetView {
             self.status = e;
             return;
         }
-        self.stage(vec![PresetOp::Write(loc.clone(), preset)]);
+        if !self.stage(vec![PresetOp::Write(loc.clone(), preset)]) { return; }
         self.status = if self.live { "Preset tags queued for live save".into() } else {
             format!("Preset {}:{:03} tags changed. Push on Presets to save them to +Drive", loc.bank, loc.slot)
         };
@@ -658,7 +701,12 @@ impl PresetView {
             self.reveal = Some(c);
         }
         let steps = self.undo.len();
-        self.stage_with(ops, edit.groups);
+        if !self.stage_with(ops, edit.groups) {
+            // Refused (a locked preset): the selection stays where it was.
+            self.sel = edit.sel.clone();
+            self.cursor = edit.cursor;
+            return;
+        }
         // Undo puts the selection back where it was before this edit, not
         // where `stage_with` saw it (already moved along with the slots).
         if self.undo.len() > steps {
@@ -941,8 +989,13 @@ impl PresetView {
         out
     }
 
-    pub(crate) fn pushed(&mut self, result: Result<(), String>) {
+    /// `wrote`: some edit reached the device before the result. A failure
+    /// with nothing sent leaves the staged edits pushable (retry); after
+    /// partial writes the staged ops no longer match the device, so pushing
+    /// stays off until a reload.
+    pub(crate) fn pushed(&mut self, result: Result<(), String>, wrote: bool) {
         self.pushing = None;
+        self.push_retry = false;
         let live = std::mem::take(&mut self.live_pushing);
         match result {
             Ok(()) if live => {
@@ -960,6 +1013,13 @@ impl PresetView {
                 } else {
                     "Presets pushed to +Drive and verified.".into()
                 };
+            }
+            // Live already took its edits off the stage, so it can't retry.
+            Err(e) if !wrote && !live => {
+                self.push_retry = true;
+                self.live = false;
+                self.live_after_push = false;
+                self.status = format!("Preset push failed before anything was written: {e} Nothing changed on the device; your edits are still staged, so you can push again.");
             }
             Err(e) => {
                 self.live = false;
@@ -1046,7 +1106,9 @@ impl Default for PresetView {
             dumping: None,
             importing: false,
             status: String::new(),
+            logged_status: String::new(),
             push_failed: false,
+            push_retry: false,
             loading: (0, 0),
             read_progress: 0.0,
             confirm_reload: false,
@@ -1201,7 +1263,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut ElekState) -> Vec<ElekIntent> {
                 .desired_width(ui.available_width()),
         );
     }
-    if st.presets.push_failed && !st.presets.status.is_empty() {
+    if (st.presets.push_failed || st.presets.push_retry) && !st.presets.status.is_empty() {
         ui.colored_label(theme::CHANGED, &st.presets.status);
     }
     ui.horizontal_wrapped(|ui| {
@@ -1283,6 +1345,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut ElekState) -> Vec<ElekIntent> {
                     st.presets.confirm_push = false;
                     if let Some(plan) = st.presets.plan(true) {
                         st.presets.pushing = Some(("Queued preset push".into(), 0, 1));
+                        st.presets.push_retry = false;
                         st.presets.status.clear();
                         out.push(ElekIntent::PushPresets(plan));
                     }
@@ -1345,6 +1408,14 @@ pub fn show(ui: &mut egui::Ui, st: &mut ElekState) -> Vec<ElekIntent> {
     elek_view::finish(ui, st, &mut out);
     if present {
         st.presets.request_tags(tag_reads, &mut out);
+    }
+    // Refusals ("Not changed: … locked", "No empty slot …") only show in the
+    // status line; keep them in KitPool.log too.
+    if st.presets.status != st.presets.logged_status {
+        st.presets.logged_status = st.presets.status.clone();
+        if !st.presets.status.is_empty() {
+            crate::log::line(format!("presets: {}", st.presets.status));
+        }
     }
     out
 }
@@ -1478,7 +1549,7 @@ fn paste_sound(st: &mut ElekState, loc: PresetSlot) {
         Err(e) => st.presets.status = format!("{e}. Nothing pasted"),
         Ok(ops) => {
             let n = ops.len();
-            st.presets.stage(ops);
+            if !st.presets.stage(ops) { return; }
             let banks = st.presets.bank_list().to_vec();
             st.presets.sel = targets.iter().filter_map(|loc| banks.iter().position(|b| *b == loc.bank)
                 .map(|b| b * BANK + loc.slot as usize - 1)).collect();
@@ -1728,9 +1799,15 @@ fn pane(
                 top_row.get_or_insert((row, r));
                 let grouped = spans.iter().any(|g| g.contains(&index));
                 let tags_width = if *filled { sound_tags::WIDTH.min(r.width() * 0.5) } else { 0.0 };
-                let tags_rect = egui::Rect::from_min_max(
-                    egui::pos2(r.right() - tags_width - 6.0, r.top()),
+                // The sound's machine, last column (same as the pool's MACHINE).
+                let machine_width = if *filled { MACHINE_W.min(r.width() * 0.2) } else { 0.0 };
+                let machine_rect = egui::Rect::from_min_max(
+                    egui::pos2(r.right() - machine_width - 6.0, r.top()),
                     egui::pos2(r.right() - 6.0, r.bottom()),
+                );
+                let tags_rect = egui::Rect::from_min_max(
+                    egui::pos2(machine_rect.left() - tags_width - if *filled { 6.0 } else { 0.0 }, r.top()),
+                    egui::pos2(machine_rect.left() - if *filled { 6.0 } else { 0.0 }, r.bottom()),
                 );
                 let grip = egui::Rect::from_min_max(r.min, egui::pos2(tags_rect.left() - 4.0, r.bottom()));
                 let over = resp;
@@ -1776,6 +1853,21 @@ fn pane(
                 if *filled {
                     let source = row_sources[row].as_ref();
                     let loaded = source.and_then(|src| st.presets.preset(src)).is_some_and(|r| r.is_ok());
+                    let loaded_preset = source.and_then(|src| st.presets.preset(src)).and_then(Result::ok);
+                    let sound = loaded_preset.map(|p| &p.sound);
+                    let mcolor = if *changed { theme::CHANGED } else { OLED }.gamma_multiply(0.5);
+                    let mut mtext = egui::text::LayoutJob::simple_singleline(
+                        sound.map_or_else(|| "…".into(), machine_text), oled_font(12.0), mcolor,
+                    );
+                    mtext.wrap = egui::text::TextWrapping::truncate_at_width(machine_rect.width());
+                    let mgalley = ui.painter().layout_job(mtext);
+                    ui.painter().with_clip_rect(machine_rect.intersect(ui.clip_rect())).galley(
+                        egui::pos2(machine_rect.left(), r.center().y - mgalley.size().y * 0.5), mgalley, mcolor,
+                    );
+                    if let Some(preset) = loaded_preset {
+                        ui.interact(machine_rect, ui.scope_id().with(("preset_machine", &bank, slot)), Sense::hover())
+                            .on_hover_text(machine_tip(preset));
+                    }
                     if let Some(Ok(mask)) = tags {
                         let (value, opened) = sound_tags::show_with_open(
                             ui, tags_rect, ui.scope_id().with(("preset_tags", &bank, slot)),
